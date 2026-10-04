@@ -66,6 +66,8 @@ final class TunnelManager: ObservableObject {
     private var startedAt: [String: Date] = [:]
     private var restartWork: [String: DispatchWorkItem] = [:]
     private var oldConfigs: [String: TunnelConfig] = [:]
+    private var lastError: [String: String] = [:]
+    private var lastErrorAt: [String: Date] = [:]
     private var timer: Timer?
 
     static var configURL: URL {
@@ -76,8 +78,8 @@ final class TunnelManager: ObservableObject {
 
     init() {
         loadConfig()
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            DispatchQueue.main.async { self?.refreshDetails() }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.objectWillChange.send() }
         }
         for s in statuses where s.config.autoStart {
             start(s.id)
@@ -144,7 +146,9 @@ final class TunnelManager: ObservableObject {
 
     // MARK: 启停
 
-    func toggle(_ id: String) { intended[id] == true ? stop(id) : start(id) }
+    func isOn(_ id: String) -> Bool { intended[id] == true }
+
+    func toggle(_ id: String) { isOn(id) ? stop(id) : start(id) }
 
     func start(_ id: String) {
         guard procs[id] == nil, restartWork[id] == nil else { return }
@@ -174,21 +178,22 @@ final class TunnelManager: ObservableObject {
         p.standardError = errPipe
 
         p.terminationHandler = { [weak self] _ in
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            let errMsg = String(data: errData, encoding: .utf8)?
-                .split(separator: "\n").last.map { String($0).prefix(100) } ?? ""
-            DispatchQueue.main.async { self?.handleExit(id: id, err: String(errMsg)) }
+            let err = Self.stderrTail(errPipe)
+            DispatchQueue.main.async { self?.handleExit(id: id, err: err) }
         }
 
         do {
             try p.run()
         } catch {
             intended[id] = nil
-            setState(id, .stopped, "启动失败: \(error.localizedDescription)")
+            lastError[id] = "启动失败: \(error.localizedDescription)"
+            lastErrorAt[id] = Date()
+            setState(id, .stopped, "")
             return
         }
         procs[id] = p
         startedAt[id] = Date()
+        lastError[id] = nil
         setState(id, .running, "")
     }
 
@@ -201,8 +206,11 @@ final class TunnelManager: ObservableObject {
         let n = (attempts[id] ?? 0) + 1
         attempts[id] = n
         let delay = min(30.0, 1.5 * pow(2, Double(n - 1)))
-        setState(id, .reconnecting,
-                 "第\(n)次重连 · \(Int(delay))s后重试\(err.isEmpty ? "" : " · \(err)")")
+        if !err.isEmpty {
+            lastError[id] = "第\(n)次尝试失败 (\(Self.clockText()))\n\(err)"
+            lastErrorAt[id] = Date()
+        }
+        setState(id, .reconnecting, "↻ 第\(n)次重连 · \(Int(delay))s后重试")
         let w = DispatchWorkItem { [weak self] in self?.spawn(id) }
         restartWork[id] = w
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
@@ -224,7 +232,10 @@ final class TunnelManager: ObservableObject {
         for s in statuses { stop(s.id) }
     }
 
-    // MARK: 展示
+    func errorText(_ id: String) -> String? {
+        guard lastError[id] != nil else { return nil }
+        return lastError[id]!
+    }
 
     func uptimeText(_ id: String) -> String? {
         guard statuses.first(where: { $0.id == id })?.state == .running,
@@ -235,13 +246,28 @@ final class TunnelManager: ObservableObject {
         return "\(sec / 3600)小时\(max(0, sec % 3600 / 60))分"
     }
 
+    // MARK: 私有工具
+
     private func setState(_ id: String, _ s: TunnelState, _ detail: String) {
         guard let i = statuses.firstIndex(where: { $0.id == id }) else { return }
         statuses[i].state = s
         statuses[i].detail = detail
     }
 
-    private func refreshDetails() { objectWillChange.send() }
+    private static func clockText() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: Date())
+    }
+
+    /// 取 stderr 末尾几行作为错误摘要
+    private static func stderrTail(_ pipe: Pipe) -> String {
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return "" }
+        let lines = text.split(separator: "\n").map { String($0) }.filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return "" }
+        return String(lines.suffix(6).joined(separator: "\n").suffix(600))
+    }
 }
 
 private extension JSONEncoder {
@@ -252,7 +278,7 @@ private extension JSONEncoder {
     }
 }
 
-// MARK: - 菜单栏 UI
+// MARK: - 菜单栏面板 UI
 
 @main
 struct TunnelBarApp: App {
@@ -261,13 +287,13 @@ struct TunnelBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent()
+            TunnelPanel()
         } label: {
             Image(systemName: manager.statuses.contains { $0.state == .reconnecting }
                   ? "arrow.triangle.2.circlepath"
                   : "arrow.left.arrow.right")
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -280,51 +306,132 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-struct MenuContent: View {
+struct TunnelPanel: View {
     @ObservedObject var manager = TunnelManager.shared
+    @State private var expanded: Set<String> = []
 
     var body: some View {
-        if manager.statuses.isEmpty {
-            Text("暂无隧道 · 点「编辑配置」添加")
-        }
-        ForEach(manager.statuses) { t in
-            Button {
-                manager.toggle(t.id)
-            } label: {
-                Text("\(mark(t.state))  \(t.config.name)")
+        VStack(spacing: 0) {
+            if manager.statuses.isEmpty {
+                Text("暂无隧道 · 点右上角 ✎ 编辑配置添加")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 28)
             }
-            if let d = detail(t) {
-                Text("      \(d)").foregroundStyle(.secondary)
-            }
+            ForEach(manager.statuses) { row($0) }
+            Divider().padding(.vertical, 8)
+            footer
         }
-        Divider()
-        Button("启动全部") {
-            for s in manager.statuses { manager.start(s.id) }
-        }
-        Button("停止全部") { manager.stopAll() }
-        Divider()
-        Button("编辑配置…") { manager.editConfig() }
-        Button("重新载入配置") { manager.loadConfig() }
-        Divider()
-        Button("退出 TunnelBar") { NSApp.terminate(nil) }
+        .padding(12)
+        .frame(width: 360)
     }
 
-    private func mark(_ s: TunnelState) -> String {
-        switch s {
-        case .running: return "●"
-        case .reconnecting: return "↻"
-        case .stopped: return "○"
+    // MARK: 每条隧道一行
+
+    @ViewBuilder
+    private func row(_ t: TunnelStatus) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(t.state == .running ? Color.green
+                        : t.state == .reconnecting ? Color.orange : Color.secondary.opacity(0.4))
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(t.config.name).font(.system(size: 13, weight: .medium))
+                    Text(subtitle(t))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if manager.errorText(t.id) != nil, t.state != .running {
+                    Button {
+                        toggleExpand(t.id)
+                    } label: {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.red)
+                            .help("查看错误")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Toggle("", isOn: switchBinding(t))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+            }
+            if expanded.contains(t.id), let err = manager.errorText(t.id) {
+                Text(err)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4).fill(Color.red.opacity(0.08)))
+            }
         }
+        .padding(.vertical, 5)
+        if t.id != manager.statuses.last?.id { Divider() }
     }
 
-    private func detail(_ t: TunnelStatus) -> String? {
+    private func switchBinding(_ t: TunnelStatus) -> Binding<Bool> {
+        Binding(
+            get: { manager.isOn(t.id) },
+            set: { _ in manager.toggle(t.id) }
+        )
+    }
+
+    private func subtitle(_ t: TunnelStatus) -> String {
+        var parts: [String] = []
         switch t.state {
-        case .stopped:
-            return t.detail.isEmpty ? nil : "⚠︎ \(t.detail)"
-        case .reconnecting:
-            return t.detail
         case .running:
-            return manager.uptimeText(t.id).map { "已连 \($0)" }
+            parts.append(manager.uptimeText(t.id).map { "已连 \($0)" } ?? "运行中")
+            parts.append(Self.forwardSummary(t.config.forwards))
+        case .reconnecting:
+            parts.append(t.detail)
+        case .stopped:
+            parts.append(t.config.sshTarget)
+            parts.append(Self.forwardSummary(t.config.forwards))
         }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// "127.0.0.1:15432:127.0.0.1:5432" → "15432→5432"
+    private static func forwardSummary(_ forwards: [String]) -> String {
+        forwards.map { f in
+            let c = f.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+            if c.count == 4,
+               ["127.0.0.1", "localhost", "[::1]"].contains(c[0]),
+               ["127.0.0.1", "localhost", "[::1]"].contains(c[2]) {
+                return "\(c[1])→\(c[3])"
+            }
+            return f
+        }.joined(separator: " ")
+    }
+
+    private func toggleExpand(_ id: String) {
+        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    }
+
+    // MARK: 底部操作
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            Button("全部启动") {
+                for s in manager.statuses { manager.start(s.id) }
+            }
+            Button("全部停止") { manager.stopAll() }
+            Spacer()
+            Button { manager.editConfig() } label: {
+                Image(systemName: "square.and.pencil").help("编辑配置")
+            }
+            Button { manager.loadConfig() } label: {
+                Image(systemName: "arrow.clockwise").help("重新载入配置")
+            }
+            Button { NSApp.terminate(nil) } label: {
+                Image(systemName: "power").help("退出 TunnelBar")
+            }
+        }
+        .buttonStyle(.link)
+        .font(.system(size: 12))
     }
 }
