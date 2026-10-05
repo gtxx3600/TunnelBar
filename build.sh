@@ -9,7 +9,7 @@ mkdir -p "$APP/Contents/MacOS"
 echo "[1/2] swiftc 编译中…"
 swiftc -O -swift-version 5 -parse-as-library \
   -o "$APP/Contents/MacOS/tunnel-bar" \
-  Sources/main.swift
+  Sources/*.swift
 
 echo "[2/2] 组装 bundle…"
 cp Resources/Info.plist "$APP/Contents/"

@@ -1,47 +1,7 @@
-// TunnelBar — macOS 菜单栏 SSH 隧道管理器
-// 每条隧道一个 ssh -N -L 进程，退出后指数退避自动重连（autossh 风格）
-// 隧道进程生命周期独立于 app：退出 app 不杀隧道，重启后按 pid 文件接管
-// 配置: ~/.config/tunnel-bar/config.json
+// 隧道管理器：进程生命周期 / 接管 / 重连 / 配置应用
 
 import SwiftUI
 import AppKit
-
-// MARK: - 配置模型
-
-struct TunnelConfig: Codable, Identifiable, Equatable {
-    var id: String
-    var name: String
-    /// ~/.ssh/config 里的别名，或 user@host -p port 形式
-    var sshTarget: String
-    /// 每项是一条 -L 参数值，如 "127.0.0.1:15432:127.0.0.1:5432"，可多条
-    var forwards: [String]
-    /// 附加 ssh 参数，如 ["-o", "ServerAliveInterval=30"]
-    var extraArgs: [String]
-    /// 应用启动时自动拉起
-    var autoStart: Bool
-
-    init(id: String, name: String, sshTarget: String, forwards: [String],
-         extraArgs: [String] = [], autoStart: Bool = false) {
-        self.id = id; self.name = name; self.sshTarget = sshTarget
-        self.forwards = forwards; self.extraArgs = extraArgs; self.autoStart = autoStart
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decode(String.self, forKey: .name)
-        sshTarget = try c.decode(String.self, forKey: .sshTarget)
-        forwards = try c.decodeIfPresent([String].self, forKey: .forwards) ?? []
-        extraArgs = try c.decodeIfPresent([String].self, forKey: .extraArgs) ?? []
-        autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
-    }
-}
-
-struct AppConfig: Codable {
-    var tunnels: [TunnelConfig] = []
-}
-
-// MARK: - 状态
 
 enum TunnelState {
     case stopped, running, reconnecting
@@ -54,12 +14,11 @@ struct TunnelStatus: Identifiable {
     var id: String { config.id }
 }
 
-// MARK: - 隧道管理器
-
 final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
 
     @Published var statuses: [TunnelStatus] = []
+    private(set) var current = AppConfig()
 
     private var procs: [String: Process] = [:]           // app 自己拉起的 ssh
     private var adoptedPids: [String: pid_t] = [:]       // 重启后接管的 ssh
@@ -67,7 +26,7 @@ final class TunnelManager: ObservableObject {
     private var attempts: [String: Int] = [:]
     private var startedAt: [String: Date] = [:]
     private var restartWork: [String: DispatchWorkItem] = [:]
-    private var oldConfigs: [String: TunnelConfig] = [:]
+    private var argSigs: [String: String] = [:]          // 在跑隧道的生效参数签名
     private var lastError: [String: String] = [:]
     private var timer: Timer?
 
@@ -95,36 +54,63 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    // MARK: 配置读写
+    // MARK: - 生效 ssh 参数
+
+    func node(_ id: String) -> NodeConfig? {
+        current.nodes.first { $0.id == id }
+    }
+
+    func nodeName(_ id: String) -> String {
+        node(id).map { $0.name.isEmpty ? $0.host : $0.name } ?? "?"
+    }
+
+    /// 这条隧道完整 ssh 命令行（节点不存在返回 nil）
+    func sshArgs(for tunnel: TunnelConfig) -> [String]? {
+        guard let n = node(tunnel.nodeId) else { return nil }
+        var args = ["-N",
+                    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+                    "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10"]
+        if let port = Int(n.port.trimmingCharacters(in: .whitespaces)), port > 0 {
+            args += ["-p", n.port.trimmingCharacters(in: .whitespaces)]
+        }
+        if !n.identityFile.trimmingCharacters(in: .whitespaces).isEmpty {
+            args += ["-i", n.identityFile.trimmingCharacters(in: .whitespaces)]
+        }
+        for f in tunnel.forwards where !f.trimmingCharacters(in: .whitespaces).isEmpty {
+            args += ["-L", f]
+        }
+        args += tunnel.extraArgs
+        args.append(n.sshTarget)
+        return args
+    }
+
+    // MARK: - 配置
+
+    private func persist(_ cfg: AppConfig) {
+        try? FileManager.default.createDirectory(
+            at: Self.configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = JSONEncoder.encodePretty(cfg) {
+            try? data.write(to: Self.configURL, options: .atomic)
+        }
+    }
 
     private func readOrCreateConfig() -> AppConfig {
-        let url = Self.configURL
-        if !FileManager.default.fileExists(atPath: url.path) {
-            let def = AppConfig(tunnels: [
-                TunnelConfig(id: "database-forward", name: "数据库访问",
-                             sshTarget: "example",
-                             forwards: ["127.0.0.1:15432:127.0.0.1:5432"],
-                             autoStart: true)
-            ])
-            try? FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if let data = JSONEncoder.output(encoded: def) {
-                try? data.write(to: url, options: .atomic)
-            }
+        guard FileManager.default.fileExists(atPath: Self.configURL.path),
+              let data = try? Data(contentsOf: Self.configURL),
+              let cfg = try? JSONDecoder().decode(AppConfig.self, from: data) else {
+            let def = AppConfig.defaultConfig()
+            persist(def)
             return def
         }
-        guard let data = try? Data(contentsOf: url),
-              let cfg = try? JSONDecoder().decode(AppConfig.self, from: data) else {
-            return AppConfig(tunnels: [])
-        }
+        persist(cfg)   // 归一化落盘（老格式迁移/缺省字段补全后回写）
         return cfg
     }
 
     func loadConfig() {
         let cfg = readOrCreateConfig()
+        current = cfg
         let newIDs = Set(cfg.tunnels.map(\.id))
 
-        // 已被删除的隧道 → 停掉
         for (id, _) in procs where !newIDs.contains(id) { stop(id) }
         for (id, _) in adoptedPids where !newIDs.contains(id) { stop(id) }
 
@@ -139,12 +125,25 @@ final class TunnelManager: ObservableObject {
         }
         statuses = next
 
-        // 在跑但配置变了 → 重启生效
-        for c in cfg.tunnels where intended[c.id] == true && oldConfigs[c.id] != c {
-            stop(c.id)
-            start(c.id)
+        // 在跑但生效参数变了（改了节点/转发/附加参数）→ 重启生效
+        for c in cfg.tunnels where isOn(c.id) {
+            if let args = sshArgs(for: c), argSigs[c.id] != args.joined(separator: " ") {
+                stop(c.id)
+                start(c.id)
+            }
         }
-        oldConfigs = Dictionary(uniqueKeysWithValues: cfg.tunnels.map { ($0.id, $0) })
+        argSigs = Dictionary(uniqueKeysWithValues: cfg.tunnels.compactMap { c in
+            sshArgs(for: c).map { (c.id, $0.joined(separator: " ")) }
+        })
+    }
+
+    /// 配置窗口「保存」入口：落盘 → 重载 → 拉起新增的 autoStart 隧道
+    func applyConfig(_ cfg: AppConfig) {
+        persist(cfg)
+        loadConfig()
+        for t in cfg.tunnels where t.autoStart && !isOn(t.id) {
+            start(t.id)
+        }
     }
 
     func editConfig() {
@@ -154,7 +153,7 @@ final class TunnelManager: ObservableObject {
         try? p.run()
     }
 
-    // MARK: pid 文件（跨重启接管用）
+    // MARK: - pid / 日志文件（跨重启接管用）
 
     private func pidFileURL(_ id: String) -> URL {
         Self.runDir.appendingPathComponent("\(id).pid")
@@ -185,11 +184,11 @@ final class TunnelManager: ObservableObject {
     }
 
     /// 校验 pid 还活着且命令行确实是这条隧道的 ssh（防 pid 复用误接管）
-    private static func processMatches(_ pid: pid_t, config: TunnelConfig) -> Bool {
+    private static func processMatches(_ pid: pid_t, tunnel: TunnelConfig, node: NodeConfig) -> Bool {
         guard pid > 0, kill(pid, 0) == 0 else { return false }
         guard let cmd = ps(pid, columns: ["command="]) else { return false }
-        return cmd.contains("ssh") && cmd.contains(config.sshTarget)
-            && config.forwards.allSatisfy { cmd.contains($0) }
+        return cmd.contains("ssh") && cmd.contains(node.sshTarget)
+            && tunnel.forwards.allSatisfy { cmd.contains($0) }
     }
 
     /// ps -p <pid> -o <columns>，失败返回 nil
@@ -237,13 +236,15 @@ final class TunnelManager: ObservableObject {
                   pidNum > 0
             else { continue }
             let pid = pid_t(pidNum)
-            guard Self.processMatches(pid, config: s.config) else {
-                removePidFile(s.id)      // 进程没了或 pid 被复用 → 陈旧文件
+            guard let n = node(s.config.nodeId),
+                  Self.processMatches(pid, tunnel: s.config, node: n) else {
+                removePidFile(s.id)
                 continue
             }
             adoptedPids[s.id] = pid
             intended[s.id] = true
             startedAt[s.id] = Self.processStartDate(pid) ?? Date()
+            argSigs[s.id] = sshArgs(for: s.config).map { $0.joined(separator: " ") }
             setState(s.id, .running, "")
         }
     }
@@ -254,14 +255,14 @@ final class TunnelManager: ObservableObject {
             adoptedPids[id] = nil
             removePidFile(id)
             if intended[id] == true {
-            handleExit(id: id)
-        } else {
-            setState(id, .stopped, "")
-        }
+                handleExit(id: id)
+            } else {
+                setState(id, .stopped, "")
+            }
         }
     }
 
-    // MARK: 启停
+    // MARK: - 启停
 
     func isOn(_ id: String) -> Bool { intended[id] == true }
 
@@ -269,23 +270,21 @@ final class TunnelManager: ObservableObject {
 
     func start(_ id: String) {
         guard procs[id] == nil, restartWork[id] == nil, adoptedPids[id] == nil else { return }
-        guard statuses.contains(where: { $0.id == id }) else { return }
+        guard let cfg = statuses.first(where: { $0.id == id })?.config,
+              sshArgs(for: cfg) != nil else { return }
         intended[id] = true
         spawn(id)
     }
 
     private func spawn(_ id: String) {
-        guard let cfg = statuses.first(where: { $0.id == id })?.config else { return }
+        guard let cfg = statuses.first(where: { $0.id == id })?.config,
+              let args = sshArgs(for: cfg) else {
+            intended[id] = nil
+            return
+        }
 
         // 上一轮存活超过 60s 视为稳定，重试计数清零
         if let t = startedAt[id], Date().timeIntervalSince(t) > 60 { attempts[id] = 0 }
-
-        var args = ["-N",
-                    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-                    "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10"]
-        for f in cfg.forwards { args += ["-L", f] }
-        args += cfg.extraArgs
-        args.append(cfg.sshTarget)
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -367,7 +366,7 @@ final class TunnelManager: ObservableObject {
         return "\(sec / 3600)小时\(max(0, sec % 3600 / 60))分"
     }
 
-    // MARK: 私有工具
+    // MARK: - 私有工具
 
     private func setState(_ id: String, _ s: TunnelState, _ detail: String) {
         guard let i = statuses.firstIndex(where: { $0.id == id }) else { return }
@@ -387,172 +386,5 @@ final class TunnelManager: ObservableObject {
         let lines = text.split(separator: "\n").map { String($0) }.filter { !$0.isEmpty }
         guard !lines.isEmpty else { return "" }
         return String(lines.suffix(6).joined(separator: "\n").suffix(600))
-    }
-}
-
-private extension JSONEncoder {
-    static func output<T: Encodable>(encoded value: T) -> Data? {
-        let e = JSONEncoder()
-        e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return try? e.encode(value)
-    }
-}
-
-// MARK: - 菜单栏面板 UI
-
-@main
-struct TunnelBarApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @ObservedObject private var manager = TunnelManager.shared
-
-    var body: some Scene {
-        MenuBarExtra {
-            TunnelPanel()
-        } label: {
-            Image(systemName: manager.statuses.contains { $0.state == .reconnecting }
-                  ? "arrow.triangle.2.circlepath"
-                  : "arrow.left.arrow.right")
-        }
-        .menuBarExtraStyle(.window)
-    }
-}
-
-class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-    }
-
-    // 隧道生命周期独立于 app：退出不杀 ssh（无终端的子进程会被 launchd 接管继续跑），
-    // pid 文件留在 run/ 目录供下次启动接管。要停隧道用面板里的开关或「全部停止」。
-    func applicationWillTerminate(_ notification: Notification) {}
-}
-
-struct TunnelPanel: View {
-    @ObservedObject var manager = TunnelManager.shared
-    @State private var expanded: Set<String> = []
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if manager.statuses.isEmpty {
-                Text("暂无隧道 · 点右上角 ✎ 编辑配置添加")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 28)
-            }
-            ForEach(manager.statuses) { row($0) }
-            Divider().padding(.vertical, 8)
-            footer
-        }
-        .padding(12)
-        .frame(width: 360)
-    }
-
-    // MARK: 每条隧道一行
-
-    @ViewBuilder
-    private func row(_ t: TunnelStatus) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(t.state == .running ? Color.green
-                        : t.state == .reconnecting ? Color.orange : Color.secondary.opacity(0.4))
-                    .frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(t.config.name).font(.system(size: 13, weight: .medium))
-                    Text(subtitle(t))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if manager.errorText(t.id) != nil, t.state != .running {
-                    Button {
-                        toggleExpand(t.id)
-                    } label: {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .help("查看错误")
-                    }
-                    .buttonStyle(.borderless)
-                }
-                Toggle("", isOn: switchBinding(t))
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .labelsHidden()
-            }
-            if expanded.contains(t.id), let err = manager.errorText(t.id) {
-                Text(err)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4).fill(Color.red.opacity(0.08)))
-            }
-        }
-        .padding(.vertical, 5)
-        if t.id != manager.statuses.last?.id { Divider() }
-    }
-
-    private func switchBinding(_ t: TunnelStatus) -> Binding<Bool> {
-        Binding(
-            get: { manager.isOn(t.id) },
-            set: { _ in manager.toggle(t.id) }
-        )
-    }
-
-    private func subtitle(_ t: TunnelStatus) -> String {
-        var parts: [String] = []
-        switch t.state {
-        case .running:
-            parts.append(manager.uptimeText(t.id).map { "已连 \($0)" } ?? "运行中")
-            parts.append(Self.forwardSummary(t.config.forwards))
-        case .reconnecting:
-            parts.append(t.detail)
-        case .stopped:
-            parts.append(t.config.sshTarget)
-            parts.append(Self.forwardSummary(t.config.forwards))
-        }
-        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
-    }
-
-    /// "127.0.0.1:15432:127.0.0.1:5432" → "15432→5432"
-    private static func forwardSummary(_ forwards: [String]) -> String {
-        forwards.map { f in
-            let c = f.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
-            if c.count == 4,
-               ["127.0.0.1", "localhost", "[::1]"].contains(c[0]),
-               ["127.0.0.1", "localhost", "[::1]"].contains(c[2]) {
-                return "\(c[1])→\(c[3])"
-            }
-            return f
-        }.joined(separator: " ")
-    }
-
-    private func toggleExpand(_ id: String) {
-        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
-    }
-
-    // MARK: 底部操作
-
-    private var footer: some View {
-        HStack(spacing: 12) {
-            Button("全部启动") {
-                for s in manager.statuses { manager.start(s.id) }
-            }
-            Button("全部停止") { manager.stopAll() }
-            Spacer()
-            Button { manager.editConfig() } label: {
-                Image(systemName: "square.and.pencil").help("编辑配置")
-            }
-            Button { manager.loadConfig() } label: {
-                Image(systemName: "arrow.clockwise").help("重新载入配置")
-            }
-            Button { NSApp.terminate(nil) } label: {
-                Image(systemName: "power").help("退出 TunnelBar（隧道继续运行）")
-            }
-        }
-        .buttonStyle(.link)
-        .font(.system(size: 12))
     }
 }

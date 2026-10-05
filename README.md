@@ -22,19 +22,27 @@ open build/TunnelBar.app
 
 ## 配置
 
-配置文件：`~/.config/tunnel-bar/config.json`（首次启动自动生成，已预置 数据库访问）。
-菜单里「编辑配置…」直接打开，改完点「重新载入配置」生效——运行中的隧道配置有变化会自动重启。
+图形化配置：面板底部 **⚙** 打开配置窗口，左侧列表右侧表单，「隧道 / 节点」两页切换；
+保存时统一校验（名称/主机/端口/转发格式），改动到运行中隧道的生效参数会自动重启该隧道，
+新加的 autoStart 隧道保存后立即拉起。删除被引用的节点会被拦截。
+
+数据模型分两层，配置文件 `~/.config/tunnel-bar/config.json`（首次启动自动生成，老版
+sshTarget 单串格式会自动迁移，迁移前原文件备份为 `config.json.v1.bak`）：
+
+- **节点** = SSH 端点：名称、主机（域名/IP/`~/.ssh/config` 别名）、端口、用户、密钥路径。
+  主机填别名时，端口/用户/密钥留空即完全沿用别名里的定义
+- **隧道** = 绑定一个节点 + 若干条转发（`-L` 值）+ 附加参数 + 自动启动
 
 ```json
 {
+  "nodes": [
+    { "id": "node-example", "name": "example", "host": "example", "port": "", "user": "", "identityFile": "" }
+  ],
   "tunnels": [
     {
-      "id": "database-forward",
-      "name": "数据库访问",
-      "sshTarget": "example",
+      "id": "database-forward", "name": "数据库访问", "nodeId": "node-example",
       "forwards": ["127.0.0.1:15432:127.0.0.1:5432"],
-      "extraArgs": [],
-      "autoStart": true
+      "extraArgs": [], "autoStart": true
     }
   ]
 }
@@ -42,12 +50,10 @@ open build/TunnelBar.app
 
 | 字段 | 说明 |
 |---|---|
-| `id` | 唯一标识，改配置时按它对应已运行的隧道 |
-| `name` | 菜单里显示的名字 |
-| `sshTarget` | `~/.ssh/config` 里的别名，或 `user@host`（端口写在别名里最省事） |
-| `forwards` | `-L` 参数值数组，一条隧道可以挂多个转发 |
-| `extraArgs` | 附加 ssh 参数，如 `["-v"]` |
-| `autoStart` | 应用启动时是否自动拉起 |
+| `node.host` | 域名 / IP / ssh 别名；`port`/`user`/`identityFile` 留空 = 不附加对应参数 |
+| `tunnel.forwards` | `-L` 参数值数组，一条隧道可以挂多个转发 |
+| `tunnel.extraArgs` | 附加 ssh 参数（空格分隔，不支持含空格的值） |
+| `tunnel.autoStart` | 应用启动时是否自动拉起 |
 
 内置固定参数（每条隧道都会带上）：
 `-N -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o ExitOnForwardFailure=yes -o ConnectTimeout=10`
