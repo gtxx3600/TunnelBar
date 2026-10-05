@@ -275,6 +275,8 @@ struct TunnelForm: View {
     @Binding var t: TunnelConfig
     let nodes: [NodeConfig]
 
+    @State private var rows: [ForwardRow] = []
+
     var body: some View {
         Form {
             TextField("名称", text: $t.name)
@@ -285,28 +287,24 @@ struct TunnelForm: View {
                 }
             }
 
-            LabeledContent("转发规则 (-L)") {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(t.forwards.indices, id: \.self) { i in
-                        HStack {
-                            TextField("127.0.0.1:15432:127.0.0.1:5432", text: $t.forwards[i])
-                                .font(.system(size: 12, design: .monospaced))
-                            Button {
-                                t.forwards.remove(at: i)
-                            } label: {
-                                Image(systemName: "minus.circle.fill").foregroundStyle(.red)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("删除这条转发")
-                        }
+            Section("转发规则") {
+                forwardHeader
+                ForEach($rows) { $row in
+                    ForwardRowView(row: $row) {
+                        rows.removeAll { $0.id == row.id }
                     }
-                    Button {
-                        withAnimation { t.forwards.append("") }
-                    } label: {
-                        Label("添加转发", systemImage: "plus.circle")
-                            .font(.system(size: 11))
-                    }
-                    .buttonStyle(.borderless)
+                }
+                Button {
+                    rows.append(ForwardRow(bind: "127.0.0.1"))
+                } label: {
+                    Label("添加转发", systemImage: "plus.circle").font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                if rows.filter({ $0.problem != nil }).count > 0 {
+                    let n = rows.filter { $0.problem != nil }.count
+                    Text("⚠︎ \(n) 条规则未填完整，保存时将被忽略")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
                 }
             }
 
@@ -316,6 +314,26 @@ struct TunnelForm: View {
                 .help("应用启动时自动拉起这条隧道")
         }
         .formStyle(.grouped)
+        .onAppear {
+            rows = t.forwards.compactMap { ForwardRow.parse($0) }
+            if rows.isEmpty { rows = [ForwardRow(bind: "127.0.0.1")] }
+        }
+        .onChange(of: rows) { _ in
+            t.forwards = rows.compactMap(\.serialized)
+        }
+    }
+
+    private var forwardHeader: some View {
+        HStack(spacing: 6) {
+            Text("本地地址").frame(width: 92, alignment: .leading)
+            Text("本地端口").frame(width: 52, alignment: .leading)
+            Color.clear.frame(width: 12)
+            Text("目标地址").frame(maxWidth: .infinity, alignment: .leading)
+            Text("目标端口").frame(width: 52, alignment: .leading)
+            Color.clear.frame(width: 26)
+        }
+        .font(.system(size: 9))
+        .foregroundStyle(.secondary)
     }
 
     private var extraString: Binding<String> {
@@ -323,6 +341,101 @@ struct TunnelForm: View {
             get: { t.extraArgs.joined(separator: " ") },
             set: { t.extraArgs = $0.split(separator: " ").map(String.init).filter { !$0.isEmpty } }
         )
+    }
+}
+
+// MARK: - 转发规则行（结构化编辑，稳定的 UUID 身份）
+
+struct ForwardRow: Identifiable, Equatable {
+    let id = UUID()
+    var bind = ""
+    var port = ""
+    var host = ""
+    var rport = ""
+
+    var isEmpty: Bool { bind.isEmpty && port.isEmpty && host.isEmpty && rport.isEmpty }
+
+    /// 合法且填写完整才序列化；不完整/非法返回 nil（编辑中不落盘）
+    var serialized: String? {
+        guard !isEmpty,
+              let _ = UInt16(port), let _ = UInt16(rport),
+              !host.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let b = bind.trimmingCharacters(in: .whitespaces)
+        let h = host.trimmingCharacters(in: .whitespaces)
+        return b.isEmpty ? "\(port):\(h):\(rport)" : "\(b):\(port):\(h):\(rport)"
+    }
+
+    /// 具体哪里没填好；全空行不算问题
+    var problem: String? {
+        if isEmpty { return nil }
+        if port.isEmpty { return "本地端口未填" }
+        if UInt16(port) == nil { return "本地端口「\(port)」需为 1-65535" }
+        if rport.isEmpty { return "目标端口未填" }
+        if UInt16(rport) == nil { return "目标端口「\(rport)」需为 1-65535" }
+        if host.trimmingCharacters(in: .whitespaces).isEmpty { return "目标地址未填" }
+        return nil
+    }
+
+    /// 宽容解析既有 -L 字符串；对不认识的格式塞进地址栏让用户自己修
+    static func parse(_ s: String) -> ForwardRow? {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let seg = trimmed.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        switch seg.count {
+        case 3:
+            return ForwardRow(bind: "", port: seg[0], host: seg[1], rport: seg[2])
+        case 4:
+            return ForwardRow(bind: seg[0], port: seg[1], host: seg[2], rport: seg[3])
+        case let n where n > 4:
+            // IPv6 目标：bind、port 取头两段，rport 取尾，中间合并为地址
+            return ForwardRow(bind: seg[0], port: seg[1],
+                              host: seg[2..<(n - 1)].joined(separator: ":"),
+                              rport: seg[n - 1])
+        default:
+            return ForwardRow(host: trimmed)
+        }
+    }
+}
+
+struct ForwardRowView: View {
+    @Binding var row: ForwardRow
+    var onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            field($row.bind, placeholder: "127.0.0.1", width: 92, invalid: false)
+            field($row.port, placeholder: "端口", width: 52,
+                  invalid: !row.port.isEmpty && UInt16(row.port) == nil)
+            Image(systemName: "arrow.right")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            field($row.host, placeholder: "127.0.0.1 / 域名", width: nil,
+                  invalid: false)
+            field($row.rport, placeholder: "端口", width: 52,
+                  invalid: !row.rport.isEmpty && UInt16(row.rport) == nil)
+            if let p = row.problem {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help(p)
+            }
+            Button(action: onDelete) {
+                Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+            }
+            .buttonStyle(.borderless)
+            .help("删除这条转发")
+        }
+    }
+
+    private func field(_ b: Binding<String>, placeholder: String,
+                       width: CGFloat?, invalid: Bool) -> some View {
+        TextField(placeholder, text: b)
+            .font(.system(size: 11, design: .monospaced))
+            .frame(width: width)
+            .background(
+                RoundedRectangle(cornerRadius: 4).fill(invalid ? Color.red.opacity(0.1) : .clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(invalid ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1))
     }
 }
 
