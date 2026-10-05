@@ -196,7 +196,7 @@ final class TunnelManager: ObservableObject {
     private static func ps(_ pid: pid_t, columns: [String]) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/ps")
-        p.arguments = ["-p", String(pid)] + columns
+        p.arguments = ["-p", String(pid), "-o"] + columns
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
