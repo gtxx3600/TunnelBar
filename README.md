@@ -41,7 +41,10 @@ sshTarget 单串格式会自动迁移，迁移前原文件备份为 `config.json
   "tunnels": [
     {
       "id": "database-forward", "name": "数据库访问", "nodeId": "node-example",
-      "forwards": ["127.0.0.1:15432:127.0.0.1:5432"],
+      "forwards": [
+        {"type": "L", "bind": "127.0.0.1", "port": "15432", "host": "127.0.0.1", "rport": "5432"},
+        {"type": "D", "port": "1080"}
+      ],
       "extraArgs": [], "autoStart": true
     }
   ]
@@ -51,7 +54,8 @@ sshTarget 单串格式会自动迁移，迁移前原文件备份为 `config.json
 | 字段 | 说明 |
 |---|---|
 | `node.host` | 域名 / IP / ssh 别名；`port`/`user`/`identityFile` 留空 = 不附加对应参数 |
-| `tunnel.forwards` | `-L` 参数值数组，一条隧道可以挂多个转发 |
+| `forward.type` | `L` 本地转发(-L) / `R` 远程转发(-R) / `D` 动态SOCKS(-D)，一条隧道可混搭多条 |
+| `forward.*` | L/R 填 地址+端口+目标地址+目标端口（地址可留空）；D 只填端口。老版纯字符串格式自动按 L 迁移 |
 | `tunnel.extraArgs` | 附加 ssh 参数（空格分隔，不支持含空格的值） |
 | `tunnel.autoStart` | 应用启动时是否自动拉起 |
 
@@ -62,7 +66,7 @@ sshTarget 单串格式会自动迁移，迁移前原文件备份为 `config.json
 
 - `●` 运行中 / `↻` 断线重连中（显示第几次、几秒后重试、最后一条 ssh 报错）/ `○` 已停止
 - 点击隧道名即切换启停；「启动全部 / 停止全部」批量操作
-- 退出应用会终止所有它拉起的 ssh 进程，不留孤儿
+- **退出 app 不杀隧道**，重启后按 pid 文件自动接管恢复状态；要停隧道用面板开关
 
 ## 开机自启
 
