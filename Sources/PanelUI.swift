@@ -22,7 +22,7 @@ struct TunnelBarApp: App {
         Window("TunnelBar 配置", id: "cfg") {
             ConfigEditor()
         }
-        .defaultSize(width: 720, height: 520)
+        .defaultSize(width: 920, height: 700)
     }
 }
 

@@ -10,3 +10,9 @@ swiftc -swift-version 5 -parse-as-library \
   Sources/TunnelModels.swift Sources/ConfigStore.swift Sources/TunnelManager.swift \
   Tests/RegressionTests.swift -o "$TEST_DIR/regression-tests"
 "$TEST_DIR/regression-tests" "$TEST_DIR" "$TEST_DIR/mock-ssh"
+
+# 配置编辑器草稿规则使用纯数据测试，不读在线配置。
+swiftc -swift-version 5 -parse-as-library \
+  Sources/TunnelModels.swift Sources/ConfigDraft.swift Tests/ConfigDraftTests.swift \
+  -o "$TEST_DIR/config-draft-tests"
+"$TEST_DIR/config-draft-tests"
