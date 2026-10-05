@@ -1,6 +1,7 @@
 // 配置窗口：节点 / 隧道 图形化管理（主从式：左列表右表单）
 
 import SwiftUI
+import AppKit
 
 struct ConfigEditor: View {
     @ObservedObject var manager = TunnelManager.shared
@@ -14,6 +15,8 @@ struct ConfigEditor: View {
     @State private var notice = ""
     @Environment(\.dismiss) private var dismiss
 
+    private let sidebarWidth: CGFloat = 150
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: $mode) {
@@ -22,25 +25,28 @@ struct ConfigEditor: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 200)
-            .padding(.bottom, 10)
+            .frame(width: 264)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
 
             HStack(spacing: 0) {
-                listPane.frame(width: 200)
+                listPane.frame(width: sidebarWidth)
                 Divider()
                 detailPane
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(14)
             }
 
             Divider()
-            footer.padding(8)
+            footer
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
         }
-        .frame(minWidth: 660, minHeight: 470)
+        .frame(minWidth: 680, idealWidth: 720, minHeight: 500, idealHeight: 520)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             draft = manager.current
             selT = draft.tunnels.first?.id
             selN = draft.nodes.first?.id
+            enforceDefaultFrameOnce()
         }
         .alert("无法保存", isPresented: Binding(
             get: { !problems.isEmpty },
@@ -49,7 +55,7 @@ struct ConfigEditor: View {
         } message: {
             Text(problems.joined(separator: "\n"))
         }
-        .alert(notceTitle, isPresented: Binding(
+        .alert(noticeTitle, isPresented: Binding(
             get: { !notice.isEmpty },
             set: { if !$0 { notice = "" } })) {
             Button("好") { notice = "" }
@@ -63,19 +69,31 @@ struct ConfigEditor: View {
         }
     }
 
-    private var notceTitle: String { notice.isEmpty ? "" : String(notice.prefix(20)) }
+    private var noticeTitle: String { notice.isEmpty ? "" : String(notice.prefix(20)) }
+
+    /// macOS 26 上经 openWindow 延迟创建的窗口有时按内容最小尺寸(680×500)打开、
+    /// 忽略场景的 defaultSize；首次出现时若小于默认尺寸，恢复为 720×520。
+    /// 只放大，不缩小用户手动调大的窗口。
+    private func enforceDefaultFrameOnce() {
+        DispatchQueue.main.async {
+            guard let w = NSApp.windows.first(where: { $0.title == "TunnelBar 配置" }) else { return }
+            let content = w.contentRect(forFrameRect: w.frame).size
+            guard content.width < 720 || content.height < 520 else { return }
+            w.setContentSize(NSSize(width: 720, height: 520))
+        }
+    }
 
     // MARK: 左侧列表
 
     private var listPane: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(spacing: 2) {
+                VStack(spacing: 3) {
                     if mode == 0 {
                         ForEach(draft.tunnels) { t in
                             listRow(title: t.name.isEmpty ? "（未命名）" : t.name,
-                                    sub: "\(nodeNameInDraft(t.nodeId)) · \(t.forwards.count) 条转发"
-                                        + (t.autoStart ? " · 自启" : ""),
+                                    sub: "\(nodeNameInDraft(t.nodeId)) · \(t.forwards.count) 条转发",
+                                    badge: t.autoStart ? "自启" : nil,
                                     selected: selT == t.id)
                                 .onTapGesture { selT = t.id }
                         }
@@ -83,36 +101,55 @@ struct ConfigEditor: View {
                         ForEach(draft.nodes) { n in
                             listRow(title: n.name.isEmpty ? n.host : n.name,
                                     sub: n.sshTarget + (n.port.isEmpty ? "" : " :\(n.port)"),
+                                    badge: nil,
                                     selected: selN == n.id)
                                 .onTapGesture { selN = n.id }
                         }
                     }
                 }
-                .padding(6)
+                .padding(8)
             }
             Divider()
             Button {
                 mode == 0 ? addTunnel() : addNode()
             } label: {
                 Label(mode == 0 ? "新建隧道" : "新建节点", systemImage: "plus")
+                    .font(.system(size: 12))
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .padding(8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
         }
     }
 
-    private func listRow(title: String, sub: String, selected: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-            Text(sub).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+    private func listRow(title: String, sub: String, badge: String?, selected: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+            HStack(spacing: 5) {
+                Text(sub)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(selected ? Color.accentColor.opacity(0.15) : Color.clear))
+                .fill(selected ? Color.accentColor.opacity(0.12) : Color.clear))
         .contentShape(Rectangle())
     }
 
@@ -126,15 +163,25 @@ struct ConfigEditor: View {
     private var detailPane: some View {
         if mode == 0 {
             if let i = draft.tunnels.firstIndex(where: { $0.id == selT }) {
-                TunnelForm(t: $draft.tunnels[i], nodes: draft.nodes)
+                ScrollView {
+                    TunnelForm(t: $draft.tunnels[i], nodes: draft.nodes)
+                        // 按选中 id 重建表单身份：否则同窗口内切换隧道时
+                        // TunnelForm 的 @State rows 不会重新解析，旧数据会串进新隧道
+                        .id(selT)
+                        .padding(12)
+                }
             } else {
                 placeholder("选择左侧隧道，或新建一条")
             }
         } else {
             if let i = draft.nodes.firstIndex(where: { $0.id == selN }) {
-                NodeForm(n: $draft.nodes[i],
-                         usedBy: draft.tunnels.filter { $0.nodeId == draft.nodes[i].id }
-                             .map { $0.name.isEmpty ? $0.id : $0.name })
+                ScrollView {
+                    NodeForm(n: $draft.nodes[i],
+                             usedBy: draft.tunnels.filter { $0.nodeId == draft.nodes[i].id }
+                                 .map { $0.name.isEmpty ? $0.id : $0.name })
+                        .id(selN)
+                        .padding(12)
+                }
             } else {
                 placeholder("选择左侧节点，或新建一个")
             }
@@ -148,7 +195,9 @@ struct ConfigEditor: View {
     // MARK: 底部操作
 
     private var footer: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            Spacer()
+
             Button(role: .destructive) {
                 let hasSel = mode == 0 ? selT != nil : selN != nil
                 if hasSel {
@@ -164,18 +213,17 @@ struct ConfigEditor: View {
             }
             .disabled(mode == 0 ? selT == nil : selN == nil)
 
-            Spacer()
-
             Button("恢复未保存的修改") {
                 draft = manager.current
                 selT = draft.tunnels.first?.id
                 selN = draft.nodes.first?.id
             }
+
             Button("保存") { save() }
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
         }
         .buttonStyle(.bordered)
-        .padding(.horizontal, 4)
     }
 
     // MARK: 增删改
@@ -278,42 +326,67 @@ struct TunnelForm: View {
     @State private var rows: [ForwardRow] = []
 
     var body: some View {
-        Form {
-            TextField("名称", text: $t.name)
-
-            Picker("节点", selection: $t.nodeId) {
-                ForEach(nodes) { n in
-                    Text(n.name.isEmpty ? n.host : n.name).tag(n.id)
-                }
-            }
-
-            Section("转发规则") {
-                forwardHeader
-                ForEach($rows) { $row in
-                    ForwardRowView(row: $row) {
-                        rows.removeAll { $0.id == row.id }
+        VStack(spacing: 12) {
+            SectionCard(title: "基本信息") {
+                VStack(spacing: 10) {
+                    FormRow(label: "名称") {
+                        TextField("隧道名称", text: $t.name)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    FormRow(label: "节点") {
+                        Picker("", selection: $t.nodeId) {
+                            ForEach(nodes) { n in
+                                Text(n.name.isEmpty ? n.host : n.name).tag(n.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                Button {
-                    rows.append(ForwardRow(bind: "127.0.0.1"))
-                } label: {
-                    Label("添加转发", systemImage: "plus.circle").font(.system(size: 11))
-                }
-                .buttonStyle(.borderless)
-                if rows.filter({ $0.problem != nil }).count > 0 {
-                    let n = rows.filter { $0.problem != nil }.count
-                    Text("⚠︎ \(n) 条规则未填完整，保存时将被忽略")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+            }
+
+            SectionCard(title: "转发规则") {
+                VStack(alignment: .leading, spacing: 10) {
+                    forwardGrid
+
+                    HStack(spacing: 8) {
+                        Button {
+                            rows.append(ForwardRow(bind: "127.0.0.1"))
+                        } label: {
+                            Label("添加转发", systemImage: "plus.circle")
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.borderless)
+
+                        Spacer()
+
+                        if rows.filter({ $0.problem != nil }).count > 0 {
+                            let n = rows.filter { $0.problem != nil }.count
+                            Text("⚠︎ \(n) 条规则未填完整，保存时将被忽略")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.orange)
+                        }
+                    }
                 }
             }
 
-            TextField("附加参数（空格分隔，如 -v）", text: extraString)
-
-            Toggle("自动启动", isOn: $t.autoStart)
-                .help("应用启动时自动拉起这条隧道")
+            SectionCard(title: "高级") {
+                VStack(spacing: 10) {
+                    FormRow(label: "附加参数") {
+                        TextField("空格分隔，如 -v", text: extraString)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    FormRow(label: "自动启动") {
+                        Toggle("", isOn: $t.autoStart)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .help("应用启动时自动拉起这条隧道")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
         }
-        .formStyle(.grouped)
         .onAppear {
             rows = t.forwards.compactMap { ForwardRow.parse($0) }
             if rows.isEmpty { rows = [ForwardRow(bind: "127.0.0.1")] }
@@ -323,17 +396,81 @@ struct TunnelForm: View {
         }
     }
 
-    private var forwardHeader: some View {
-        HStack(spacing: 6) {
-            Text("本地地址").frame(width: 92, alignment: .leading)
-            Text("本地端口").frame(width: 52, alignment: .leading)
-            Color.clear.frame(width: 12)
-            Text("目标地址").frame(maxWidth: .infinity, alignment: .leading)
-            Text("目标端口").frame(width: 52, alignment: .leading)
-            Color.clear.frame(width: 26)
+    // MARK: 转发规则表格（Grid 严格列对齐）
+    // 列：本地地址(110) / 本地端口(64) / 箭头(24) / 目标地址(可伸展，默认窗口下 ≥180)
+    //     / 目标端口(64) / 状态与删除(48)
+
+    private var forwardGrid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 8) {
+            GridRow {
+                forwardHeader("本地地址", width: 110)
+                forwardHeader("本地端口", width: 68)
+                Color.clear.frame(width: 24)
+                Text("目标地址")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                forwardHeader("目标端口", width: 68)
+                Color.clear.frame(width: 56)
+            }
+            ForEach($rows) { $row in
+                GridRow {
+                    forwardCell($row.bind, "127.0.0.1", width: 110, invalid: false)
+                    forwardCell($row.port, "端口", width: 68,
+                                invalid: !row.port.isEmpty && UInt16(row.port) == nil)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24)
+                    forwardCell($row.host, "127.0.0.1 / 域名", width: nil, invalid: false)
+                    forwardCell($row.rport, "端口", width: 68,
+                                invalid: !row.rport.isEmpty && UInt16(row.rport) == nil)
+                    forwardStatus(row) {
+                        rows.removeAll { $0.id == row.id }
+                    }
+                }
+            }
         }
-        .font(.system(size: 9))
-        .foregroundStyle(.secondary)
+    }
+
+    private func forwardHeader(_ title: String, width: CGFloat) -> some View {
+        Text(title)
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .frame(width: width, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func forwardCell(_ text: Binding<String>, _ placeholder: String,
+                             width: CGFloat?, invalid: Bool) -> some View {
+        let field = TextField(placeholder, text: text)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12, design: .monospaced))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(invalid ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1))
+        if let width {
+            field.frame(width: width)
+        } else {
+            field.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func forwardStatus(_ row: ForwardRow, onDelete: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            if let p = row.problem {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .help(p)
+            }
+            Button(action: onDelete) {
+                Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+            }
+            .buttonStyle(.borderless)
+            .help("删除这条转发")
+        }
+        .frame(width: 56)
     }
 
     private var extraString: Binding<String> {
@@ -397,48 +534,6 @@ struct ForwardRow: Identifiable, Equatable {
     }
 }
 
-struct ForwardRowView: View {
-    @Binding var row: ForwardRow
-    var onDelete: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            field($row.bind, placeholder: "127.0.0.1", width: 92, invalid: false)
-            field($row.port, placeholder: "端口", width: 52,
-                  invalid: !row.port.isEmpty && UInt16(row.port) == nil)
-            Image(systemName: "arrow.right")
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-            field($row.host, placeholder: "127.0.0.1 / 域名", width: nil,
-                  invalid: false)
-            field($row.rport, placeholder: "端口", width: 52,
-                  invalid: !row.rport.isEmpty && UInt16(row.rport) == nil)
-            if let p = row.problem {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .help(p)
-            }
-            Button(action: onDelete) {
-                Image(systemName: "minus.circle.fill").foregroundStyle(.red)
-            }
-            .buttonStyle(.borderless)
-            .help("删除这条转发")
-        }
-    }
-
-    private func field(_ b: Binding<String>, placeholder: String,
-                       width: CGFloat?, invalid: Bool) -> some View {
-        TextField(placeholder, text: b)
-            .font(.system(size: 11, design: .monospaced))
-            .frame(width: width)
-            .background(
-                RoundedRectangle(cornerRadius: 4).fill(invalid ? Color.red.opacity(0.1) : .clear))
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(invalid ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1))
-    }
-}
-
 // MARK: - 节点表单
 
 struct NodeForm: View {
@@ -446,24 +541,46 @@ struct NodeForm: View {
     let usedBy: [String]
 
     var body: some View {
-        Form {
-            TextField("名称", text: $n.name)
-            TextField("主机（域名 / IP / ssh 别名）", text: $n.host)
-            TextField("端口（留空 = 沿用别名或默认 22）", text: $n.port)
-            TextField("用户（留空 = 沿用别名或本机用户）", text: $n.user)
-            TextField("密钥路径（留空 = 默认）", text: $n.identityFile)
+        VStack(spacing: 12) {
+            SectionCard(title: "连接信息") {
+                VStack(spacing: 10) {
+                    FormRow(label: "名称") {
+                        TextField("节点名称", text: $n.name)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    FormRow(label: "主机") {
+                        TextField("域名 / IP / ssh 别名", text: $n.host)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    FormRow(label: "端口") {
+                        TextField("留空 = 沿用别名或默认 22", text: $n.port)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    FormRow(label: "用户") {
+                        TextField("留空 = 沿用别名或本机用户", text: $n.user)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    FormRow(label: "密钥路径") {
+                        TextField("留空 = 默认", text: $n.identityFile)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
 
-            Text(hint)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            SectionCard(title: "说明") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(hint)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
 
-            if !usedBy.isEmpty {
-                Text("被隧道使用：\(usedBy.joined(separator: "、"))")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    if !usedBy.isEmpty {
+                        Text("被隧道使用：\(usedBy.joined(separator: "、"))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
-        .formStyle(.grouped)
     }
 
     private var hint: String {
@@ -471,5 +588,52 @@ struct NodeForm: View {
             return "提示：主机一栏填 ~/.ssh/config 里的别名时，端口/用户/密钥留空即可沿用别名里的定义"
         }
         return "端口/用户/密钥留空 = 不附加对应参数，交给 ssh 默认行为处理"
+    }
+}
+
+// MARK: - 分节卡片与表单行（系统设置观感的复用件）
+
+private struct SectionCard<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(0.07)))
+    }
+}
+
+private struct FormRow<Content: View>: View {
+    let label: String
+    let content: Content
+
+    init(label: String, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.system(size: 13))
+                .frame(width: 76, alignment: .leading)
+            content
+        }
     }
 }
