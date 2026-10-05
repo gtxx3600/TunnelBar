@@ -76,8 +76,9 @@ final class TunnelManager: ObservableObject {
         if !n.identityFile.trimmingCharacters(in: .whitespaces).isEmpty {
             args += ["-i", n.identityFile.trimmingCharacters(in: .whitespaces)]
         }
-        for f in tunnel.forwards where !f.trimmingCharacters(in: .whitespaces).isEmpty {
-            args += ["-L", f]
+        for f in tunnel.forwards {
+            guard let a = f.arg else { continue }
+            args += ["-\(f.type)", a]
         }
         args += tunnel.extraArgs
         args.append(n.sshTarget)
@@ -187,8 +188,12 @@ final class TunnelManager: ObservableObject {
     private static func processMatches(_ pid: pid_t, tunnel: TunnelConfig, node: NodeConfig) -> Bool {
         guard pid > 0, kill(pid, 0) == 0 else { return false }
         guard let cmd = ps(pid, columns: ["command="]) else { return false }
+        let forwardArgs = tunnel.forwards.compactMap { f -> String? in
+            guard let a = f.arg else { return nil }
+            return "-\(f.type) \(a)"
+        }
         return cmd.contains("ssh") && cmd.contains(node.sshTarget)
-            && tunnel.forwards.allSatisfy { cmd.contains($0) }
+            && forwardArgs.allSatisfy { cmd.contains($0) }
     }
 
     /// ps -p <pid> -o <columns>，失败返回 nil

@@ -148,16 +148,24 @@ struct TunnelPanel: View {
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
-    /// "127.0.0.1:15432:127.0.0.1:5432" → "15432→5432"
-    private static func forwardSummary(_ forwards: [String]) -> String {
-        forwards.map { f in
-            let c = f.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+    /// 转发摘要："127.0.0.1:15432:127.0.0.1:5432" → "15432→5432"；D 显示 SOCKS 端口
+    private static func forwardSummary(_ forwards: [ForwardSpec]) -> String {
+        forwards.compactMap { f -> String? in
+            guard let a = f.arg else { return nil }
+            if f.type == "D" { return "SOCKS \(a)" }
+            let c = a.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+            let short: String
             if c.count == 4,
                ["127.0.0.1", "localhost", "[::1]"].contains(c[0]),
                ["127.0.0.1", "localhost", "[::1]"].contains(c[2]) {
-                return "\(c[1])→\(c[3])"
+                short = "\(c[1])→\(c[3])"
+            } else if c.count == 3,
+                      ["127.0.0.1", "localhost", "[::1]"].contains(c[1]) {
+                short = "\(c[0])→\(c[2])"
+            } else {
+                short = a
             }
-            return f
+            return f.type == "R" ? "R \(short)" : short
         }.joined(separator: " ")
     }
 

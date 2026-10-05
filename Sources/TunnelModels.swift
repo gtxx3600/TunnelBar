@@ -38,19 +38,109 @@ struct NodeConfig: Codable, Identifiable, Equatable {
     var sshTarget: String { user.isEmpty ? host : "\(user)@\(host)" }
 }
 
+/// 一条转发规则。type: "L"=本地转发(-L), "R"=远程转发(-R), "D"=动态SOCKS(-D)
+/// 兼容 v2 老格式：纯字符串 "-L 参数值" 一律按 L 解析
+struct ForwardSpec: Codable, Equatable, Identifiable {
+    var id: String = UUID().uuidString
+    var type: String = "L"
+    var bind: String = ""
+    var port: String = ""
+    var host: String = ""
+    var rport: String = ""
+
+    enum CodingKeys: String, CodingKey { case id, type, bind, port, host, rport }
+
+    init(id: String = UUID().uuidString, type: String = "L", bind: String = "",
+         port: String = "", host: String = "", rport: String = "") {
+        self.id = id; self.type = type; self.bind = bind
+        self.port = port; self.host = host; self.rport = rport
+    }
+
+    init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(),
+           let legacy = try? single.decode(String.self) {
+            self = ForwardSpec.parse(legacy)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? "L"
+        bind = try c.decodeIfPresent(String.self, forKey: .bind) ?? ""
+        port = try c.decodeIfPresent(String.self, forKey: .port) ?? ""
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        rport = try c.decodeIfPresent(String.self, forKey: .rport) ?? ""
+    }
+
+    var isEmpty: Bool { bind.isEmpty && port.isEmpty && host.isEmpty && rport.isEmpty }
+
+    /// ssh 转发参数值；填写不完整/非法返回 nil
+    var arg: String? {
+        guard !isEmpty else { return nil }
+        let b = bind.trimmingCharacters(in: .whitespaces)
+        let h = host.trimmingCharacters(in: .whitespaces)
+        if type == "D" {
+            guard UInt16(port) != nil else { return nil }
+            return b.isEmpty ? port : "\(b):\(port)"
+        }
+        guard UInt16(port) != nil, UInt16(rport) != nil, !h.isEmpty else { return nil }
+        return b.isEmpty ? "\(port):\(h):\(rport)" : "\(b):\(port):\(h):\(rport)"
+    }
+
+    /// 具体哪里没填好；全空行不算问题
+    var problem: String? {
+        if isEmpty { return nil }
+        if port.isEmpty { return "端口未填" }
+        if UInt16(port) == nil { return "端口「\(port)」需为 1-65535" }
+        if type != "D" {
+            if rport.isEmpty { return "目标端口未填" }
+            if UInt16(rport) == nil { return "目标端口「\(rport)」需为 1-65535" }
+            if host.trimmingCharacters(in: .whitespaces).isEmpty { return "目标地址未填" }
+        }
+        return nil
+    }
+
+    var typeLabel: String {
+        switch type {
+        case "R": return "远程 R"
+        case "D": return "SOCKS D"
+        default: return "本地 L"
+        }
+    }
+
+    /// 宽容解析既有 -L 字符串；对不认识的格式塞进地址栏让用户自己修
+    static func parse(_ s: String) -> ForwardSpec {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return ForwardSpec() }
+        let seg = trimmed.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        switch seg.count {
+        case 3:
+            return ForwardSpec(bind: "", port: seg[0], host: seg[1], rport: seg[2])
+        case 4:
+            return ForwardSpec(bind: seg[0], port: seg[1], host: seg[2], rport: seg[3])
+        case let n where n > 4:
+            // IPv6 目标：bind、port 取头两段，rport 取尾，中间合并为地址
+            return ForwardSpec(bind: seg[0], port: seg[1],
+                               host: seg[2..<(n - 1)].joined(separator: ":"),
+                               rport: seg[n - 1])
+        default:
+            return ForwardSpec(host: trimmed)
+        }
+    }
+}
+
 struct TunnelConfig: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var nodeId: String
-    /// 每项是一条 -L 参数值，如 "127.0.0.1:15432:127.0.0.1:5432"，可多条
-    var forwards: [String]
+    /// 转发规则，可混合 L/R/D 类型
+    var forwards: [ForwardSpec]
     /// 附加 ssh 参数（不支持含空格的参数值）
     var extraArgs: [String] = []
     /// 应用启动时自动拉起
     var autoStart: Bool = false
 
     init(id: String = UUID().uuidString, name: String = "", nodeId: String = "",
-         forwards: [String] = [], extraArgs: [String] = [], autoStart: Bool = false) {
+         forwards: [ForwardSpec] = [], extraArgs: [String] = [], autoStart: Bool = false) {
         self.id = id; self.name = name; self.nodeId = nodeId
         self.forwards = forwards; self.extraArgs = extraArgs; self.autoStart = autoStart
     }
@@ -64,7 +154,7 @@ struct TunnelConfig: Codable, Identifiable, Equatable {
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId) ?? ""
-        forwards = try c.decodeIfPresent([String].self, forKey: .forwards) ?? []
+        forwards = try c.decodeIfPresent([ForwardSpec].self, forKey: .forwards) ?? []
         extraArgs = try c.decodeIfPresent([String].self, forKey: .extraArgs) ?? []
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
     }
@@ -107,7 +197,7 @@ struct AppConfig: Codable, Equatable {
                                           host: host, user: user)
                     nodes.append(node)
                     tunnels.append(TunnelConfig(id: lt.id, name: lt.name, nodeId: node.id,
-                                                forwards: lt.forwards ?? [],
+                                                forwards: (lt.forwards ?? []).map { ForwardSpec.parse($0) },
                                                 extraArgs: lt.extraArgs ?? [],
                                                 autoStart: lt.autoStart ?? false))
                 }
@@ -126,7 +216,8 @@ struct AppConfig: Codable, Equatable {
         let node = NodeConfig(id: "node-example", name: "example", host: "example")
         let tunnel = TunnelConfig(id: "database-forward", name: "数据库访问",
                                   nodeId: node.id,
-                                  forwards: ["127.0.0.1:15432:127.0.0.1:5432"],
+                                  forwards: [ForwardSpec(bind: "127.0.0.1", port: "15432",
+                                                         host: "127.0.0.1", rport: "5432")],
                                   autoStart: true)
         return AppConfig(nodes: [node], tunnels: [tunnel])
     }
