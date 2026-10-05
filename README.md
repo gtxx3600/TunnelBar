@@ -1,7 +1,15 @@
 # TunnelBar
 
-macOS 菜单栏 SSH 隧道管理器。常驻顶部状态栏，预置多条隧道配置，点菜单即启停；
+macOS 菜单栏 SSH 隧道管理器。常驻顶部状态栏，预置多条隧道配置，面板里开关即启停；
 隧道进程断开后自动指数退避重连（1.5s → 30s 封顶，autossh 风格），稳定运行 60s 后计数清零。
+
+**隧道生命周期独立于 app**：退出/重启 TunnelBar 不会打断隧道——ssh 子进程脱离终端，
+app 退出后由 launchd 接管继续跑；重启后 TunnelBar 读取 `~/.config/tunnel-bar/run/*.pid`
+校验并接管已在跑的进程（核对 `ps` 命令行防 pid 复用），状态、运行时长（按进程 etime 换算）
+直接恢复。要停隧道请用面板开关或「全部停止」。
+
+> ⚠️ 别在终端手动跑 TunnelBar 管理的同一条 `-L` 隧道，端口会互相冲突（ExitOnForwardFailure
+> 会让后来者起不来）。每条隧道的 ssh stderr 记在 `run/<id>.log`，面板红叹号点开即见。
 
 ## 构建 & 运行
 
@@ -57,4 +65,4 @@ open build/TunnelBar.app
 
 ## 卸载
 
-退出应用 → 删掉项目目录 → `rm -rf ~/.config/tunnel-bar`
+先在面板里「全部停止」（或手动 `pkill -f "ssh -N -L"`）→ 删掉项目目录 → `rm -rf ~/.config/tunnel-bar`
