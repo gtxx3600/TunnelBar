@@ -284,8 +284,12 @@ struct ConfigEditor: View {
         problems = validate()
         guard problems.isEmpty else { return }
 
-        manager.applyConfig(draft)
-        dismiss()
+        do {
+            try manager.applyConfig(draft)
+            dismiss()
+        } catch {
+            problems = ["配置保存失败：\(error.localizedDescription)"]
+        }
     }
 
     private func validate() -> [String] {

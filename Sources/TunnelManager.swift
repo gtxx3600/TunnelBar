@@ -2,6 +2,7 @@
 
 import SwiftUI
 import AppKit
+import Darwin
 
 enum TunnelState {
     case stopped, running, reconnecting
@@ -18,15 +19,22 @@ final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
 
     @Published var statuses: [TunnelStatus] = []
+    @Published private(set) var configError: String?
     private(set) var current = AppConfig()
+
+    private let configStore: ConfigStore
+    private let sshExecutable: URL
+    private var hasLoadedConfig = false
+    private var isExiting = false
+    private var ambiguousIDs: Set<String> = []
 
     private var procs: [String: Process] = [:]           // app 自己拉起的 ssh
     private var adoptedPids: [String: pid_t] = [:]       // 重启后接管的 ssh
     private var intended: [String: Bool] = [:]           // 用户是否期望它在跑
     private var attempts: [String: Int] = [:]
     private var startedAt: [String: Date] = [:]
-    private var restartWork: [String: DispatchWorkItem] = [:]
-    private var argSigs: [String: String] = [:]          // 在跑隧道的生效参数签名
+    private var restartWork: [String: (token: UUID, work: DispatchWorkItem)] = [:]
+    private var argSigs: [String: [String]] = [:]        // 在跑隧道的生效参数
     private var lastError: [String: String] = [:]
     private var timer: Timer?
 
@@ -40,9 +48,12 @@ final class TunnelManager: ObservableObject {
         configURL.deletingLastPathComponent().appendingPathComponent("run")
     }
 
-    init() {
+    /// 可注入临时配置和模拟 SSH 程序，测试不接触用户隧道。
+    init(configURL: URL = TunnelManager.configURL,
+         sshExecutable: URL = URL(fileURLWithPath: "/usr/bin/ssh")) {
+        configStore = ConfigStore(url: configURL)
+        self.sshExecutable = sshExecutable
         loadConfig()
-        adoptExisting()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 self?.pollAdopted()
@@ -87,33 +98,27 @@ final class TunnelManager: ObservableObject {
 
     // MARK: - 配置
 
-    private func persist(_ cfg: AppConfig) {
-        try? FileManager.default.createDirectory(
-            at: Self.configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = JSONEncoder.encodePretty(cfg) {
-            try? data.write(to: Self.configURL, options: .atomic)
+    @discardableResult
+    func loadConfig() -> Bool {
+        guard !isExiting else { return false }
+        do {
+            let cfg = try configStore.load(createIfMissing: !hasLoadedConfig)
+            reconcileConfig(cfg)
+            hasLoadedConfig = true
+            configError = nil
+            return true
+        } catch {
+            configError = "配置读取失败，原文件和现有隧道已保留：\(error.localizedDescription)"
+            return false
         }
     }
 
-    private func readOrCreateConfig() -> AppConfig {
-        guard FileManager.default.fileExists(atPath: Self.configURL.path),
-              let data = try? Data(contentsOf: Self.configURL),
-              let cfg = try? JSONDecoder().decode(AppConfig.self, from: data) else {
-            let def = AppConfig.defaultConfig()
-            persist(def)
-            return def
-        }
-        persist(cfg)   // 归一化落盘（老格式迁移/缺省字段补全后回写）
-        return cfg
-    }
-
-    func loadConfig() {
-        let cfg = readOrCreateConfig()
-        current = cfg
+    private func reconcileConfig(_ cfg: AppConfig) {
         let newIDs = Set(cfg.tunnels.map(\.id))
-
-        for (id, _) in procs where !newIDs.contains(id) { stop(id) }
-        for (id, _) in adoptedPids where !newIDs.contains(id) { stop(id) }
+        // 删除隧道也要取消待重连任务；此时仍使用旧配置校验被停止的进程。
+        for id in Set(intended.keys).union(procs.keys).union(adoptedPids.keys).union(restartWork.keys)
+            where !newIDs.contains(id) { stop(id) }
+        current = cfg
 
         var next: [TunnelStatus] = []
         for c in cfg.tunnels {
@@ -128,21 +133,31 @@ final class TunnelManager: ObservableObject {
 
         // 在跑但生效参数变了（改了节点/转发/附加参数）→ 重启生效
         for c in cfg.tunnels where isOn(c.id) {
-            if let args = sshArgs(for: c), argSigs[c.id] != args.joined(separator: " ") {
+            if let args = sshArgs(for: c), argSigs[c.id] != args {
                 stop(c.id)
                 start(c.id)
             }
         }
         argSigs = Dictionary(uniqueKeysWithValues: cfg.tunnels.compactMap { c in
-            sshArgs(for: c).map { (c.id, $0.joined(separator: " ")) }
+            sshArgs(for: c).map { (c.id, $0) }
         })
+        adoptExisting()
     }
 
-    /// 配置窗口「保存」入口：落盘 → 重载 → 拉起新增的 autoStart 隧道
-    func applyConfig(_ cfg: AppConfig) {
-        persist(cfg)
-        loadConfig()
-        for t in cfg.tunnels where t.autoStart && !isOn(t.id) {
+    /// 配置窗口「保存」入口：落盘成功后应用，拉起新增的 autoStart 隧道。
+    func applyConfig(_ cfg: AppConfig) throws {
+        guard !isExiting else { throw ConfigStoreError.invalid("应用正在退出") }
+        let oldIDs = Set(current.tunnels.map(\.id))
+        do {
+            try configStore.save(cfg)
+        } catch {
+            configError = "配置保存失败，现有隧道已保留：\(error.localizedDescription)"
+            throw error
+        }
+        reconcileConfig(cfg)
+        hasLoadedConfig = true
+        configError = nil
+        for t in cfg.tunnels where !oldIDs.contains(t.id) && t.autoStart && !isOn(t.id) {
             start(t.id)
         }
     }
@@ -150,24 +165,28 @@ final class TunnelManager: ObservableObject {
     func editConfig() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-t", Self.configURL.path]
+        p.arguments = ["-t", configStore.url.path]
         try? p.run()
     }
 
     // MARK: - pid / 日志文件（跨重启接管用）
 
+    private var runtimeDirectory: URL {
+        configStore.url.deletingLastPathComponent().appendingPathComponent("run")
+    }
+
     private func pidFileURL(_ id: String) -> URL {
-        Self.runDir.appendingPathComponent("\(id).pid")
+        runtimeDirectory.appendingPathComponent("\(id).pid")
     }
 
     /// stderr 落盘成文件：app 退出后孤儿 ssh 仍有合法的写入端，重启接管后还能读错误
     private func logFileURL(_ id: String) -> URL {
-        Self.runDir.appendingPathComponent("\(id).log")
+        runtimeDirectory.appendingPathComponent("\(id).log")
     }
 
     private func freshLogHandle(_ id: String) -> FileHandle? {
         try? FileManager.default.createDirectory(
-            at: Self.runDir, withIntermediateDirectories: true)
+            at: runtimeDirectory, withIntermediateDirectories: true)
         let url = logFileURL(id)
         try? FileManager.default.removeItem(at: url)
         FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -176,7 +195,7 @@ final class TunnelManager: ObservableObject {
 
     private func writePidFile(_ id: String, _ pid: pid_t) {
         try? FileManager.default.createDirectory(
-            at: Self.runDir, withIntermediateDirectories: true)
+            at: runtimeDirectory, withIntermediateDirectories: true)
         try? String(pid).write(to: pidFileURL(id), atomically: true, encoding: .utf8)
     }
 
@@ -184,16 +203,88 @@ final class TunnelManager: ObservableObject {
         try? FileManager.default.removeItem(at: pidFileURL(id))
     }
 
-    /// 校验 pid 还活着且命令行确实是这条隧道的 ssh（防 pid 复用误接管）
-    private static func processMatches(_ pid: pid_t, tunnel: TunnelConfig, node: NodeConfig) -> Bool {
+    /// 核对可执行文件和完整 argv，避免子串匹配把别的 SSH 连接当成当前隧道。
+    private func processMatches(_ pid: pid_t, args: [String]) -> Bool {
         guard pid > 0, kill(pid, 0) == 0 else { return false }
-        guard let cmd = ps(pid, columns: ["command="]) else { return false }
-        let forwardArgs = tunnel.forwards.compactMap { f -> String? in
-            guard let a = f.arg else { return nil }
-            return "-\(f.type) \(a)"
+        guard let command = Self.processCommand(pid),
+              command.executable == sshExecutable.resolvingSymlinksInPath().path else { return false }
+        if command.args == args { return true }
+        // 兼容旧版本调整过选项顺序；同一个选项的多个值仍按原顺序比较。
+        guard let actual = Self.groupSSHOptions(command.args),
+              let expected = Self.groupSSHOptions(args) else { return false }
+        return actual == expected
+    }
+
+    private static func groupSSHOptions(_ args: [String]) -> [String: [String]]? {
+        guard let target = args.last else { return nil }
+        let optionsWithValue: Set<String> = ["-o", "-L", "-R", "-D", "-p", "-i", "-F", "-l", "-J", "-b", "-c", "-m", "-S", "-E", "-w"]
+        var groups: [String: [String]] = ["target": [target]]
+        var i = 0
+        while i < args.count - 1 {
+            let option = args[i]
+            guard option.hasPrefix("-") else { return nil }
+            if optionsWithValue.contains(option) {
+                guard i + 1 < args.count - 1 else { return nil }
+                groups[option, default: []].append(args[i + 1])
+                i += 2
+            } else {
+                groups[option, default: []].append("")
+                i += 1
+            }
         }
-        return cmd.contains("ssh") && cmd.contains(node.sshTarget)
-            && forwardArgs.allSatisfy { cmd.contains($0) }
+        return groups
+    }
+
+    /// KERN_PROCARGS2 保留参数边界；ps 的文本命令行无法区分含空格的参数。
+    private static func processCommand(_ pid: pid_t) -> (executable: String, args: [String])? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else { return nil }
+        var bytes = [UInt8](repeating: 0, count: size)
+        let result = bytes.withUnsafeMutableBytes {
+            sysctl(&mib, UInt32(mib.count), $0.baseAddress, &size, nil, 0)
+        }
+        guard result == 0 else { return nil }
+        let argc = bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc < 65536 else { return nil }
+        var cursor = MemoryLayout<Int32>.size
+        func nextString() -> String? {
+            guard cursor < size, let end = bytes[cursor..<size].firstIndex(of: 0) else { return nil }
+            let value = String(bytes: bytes[cursor..<end], encoding: .utf8)
+            cursor = end + 1
+            return value
+        }
+        guard let executable = nextString() else { return nil }
+        while cursor < size && bytes[cursor] == 0 { cursor += 1 }
+        var argv: [String] = []
+        for _ in 0..<argc {
+            guard let argument = nextString() else { return nil }
+            argv.append(argument)
+        }
+        return (URL(fileURLWithPath: executable).resolvingSymlinksInPath().path, Array(argv.dropFirst()))
+    }
+
+    private func matchingCandidates() -> [pid_t] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-axo", "pid=,comm="]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+            let output = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0, let text = String(data: output, encoding: .utf8) else { return [] }
+            let executable = sshExecutable.resolvingSymlinksInPath().path
+            return text.split(separator: "\n").compactMap { line in
+                let fields = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+                guard fields.count == 2,
+                      String(fields[1]).trimmingCharacters(in: .whitespaces) == executable else { return nil }
+                return pid_t(fields[0])
+            }
+        } catch { return [] }
     }
 
     /// ps -p <pid> -o <columns>，失败返回 nil
@@ -235,28 +326,42 @@ final class TunnelManager: ObservableObject {
 
     /// 启动时接管上次遗留的隧道进程
     private func adoptExisting() {
-        for s in statuses {
-            guard let text = try? String(contentsOf: pidFileURL(s.id), encoding: .utf8),
-                  let pidNum = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  pidNum > 0
-            else { continue }
-            let pid = pid_t(pidNum)
-            guard let n = node(s.config.nodeId),
-                  Self.processMatches(pid, tunnel: s.config, node: n) else {
+        ambiguousIDs = []
+        let candidates = matchingCandidates()
+        var claimed = Set(procs.values.map(\.processIdentifier)).union(adoptedPids.values)
+        for s in statuses where procs[s.id] == nil && adoptedPids[s.id] == nil && restartWork[s.id] == nil {
+            guard let args = sshArgs(for: s.config) else { continue }
+            let text = try? String(contentsOf: pidFileURL(s.id), encoding: .utf8)
+            let recorded = text.flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            let matches: [pid_t]
+            if let pid = recorded, !claimed.contains(pid), processMatches(pid, args: args) {
+                matches = [pid]
+            } else {
+                // 旧版本竞态可能丢了 pid 文件；仅恢复唯一且参数完整匹配的进程。
+                matches = candidates.filter { !claimed.contains($0) && processMatches($0, args: args) }
+            }
+            guard matches.count == 1, let pid = matches.first else {
+                if matches.count > 1 {
+                    ambiguousIDs.insert(s.id)
+                    lastError[s.id] = "发现多个匹配的 SSH 进程，已保留连接；请先处理重复进程再重新载入配置"
+                }
                 removePidFile(s.id)
                 continue
             }
+            claimed.insert(pid)
             adoptedPids[s.id] = pid
+            writePidFile(s.id, pid)
             intended[s.id] = true
             startedAt[s.id] = Self.processStartDate(pid) ?? Date()
-            argSigs[s.id] = sshArgs(for: s.config).map { $0.joined(separator: " ") }
+            argSigs[s.id] = args
             setState(s.id, .running, "")
         }
     }
 
     /// 轮询接管的进程是否还活着（拿不到子进程退出回调，只能轮询）
     private func pollAdopted() {
-        for (id, pid) in adoptedPids where kill(pid, 0) != 0 {
+        guard !isExiting else { return }
+        for (id, pid) in adoptedPids where !processMatches(pid, args: argSigs[id] ?? []) {
             adoptedPids[id] = nil
             removePidFile(id)
             if intended[id] == true {
@@ -274,6 +379,7 @@ final class TunnelManager: ObservableObject {
     func toggle(_ id: String) { isOn(id) ? stop(id) : start(id) }
 
     func start(_ id: String) {
+        guard !isExiting, !ambiguousIDs.contains(id) else { return }
         guard procs[id] == nil, restartWork[id] == nil, adoptedPids[id] == nil else { return }
         guard let cfg = statuses.first(where: { $0.id == id })?.config,
               sshArgs(for: cfg) != nil else { return }
@@ -282,23 +388,27 @@ final class TunnelManager: ObservableObject {
     }
 
     private func spawn(_ id: String) {
+        guard !isExiting, intended[id] == true, procs[id] == nil, adoptedPids[id] == nil else { return }
         guard let cfg = statuses.first(where: { $0.id == id })?.config,
               let args = sshArgs(for: cfg) else {
             intended[id] = nil
             return
         }
 
-        // 上一轮存活超过 60s 视为稳定，重试计数清零
-        if let t = startedAt[id], Date().timeIntervalSince(t) > 60 { attempts[id] = 0 }
-
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        p.executableURL = sshExecutable
         p.arguments = args
+        p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
         p.standardError = freshLogHandle(id)
 
-        p.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async { self?.handleExit(id: id) }
+        p.terminationHandler = { [weak self] exited in
+            DispatchQueue.main.async {
+                // stop/start 后的旧回调不能清除新进程、PID 文件或重连任务。
+                guard let self, !self.isExiting, self.procs[id] === exited else { return }
+                self.procs[id] = nil
+                self.handleExit(id: id)
+            }
         }
 
         do {
@@ -310,6 +420,7 @@ final class TunnelManager: ObservableObject {
             return
         }
         procs[id] = p
+        argSigs[id] = args
         writePidFile(id, p.processIdentifier)
         startedAt[id] = Date()
         lastError[id] = nil
@@ -317,13 +428,15 @@ final class TunnelManager: ObservableObject {
     }
 
     private func handleExit(id: String) {
-        procs[id] = nil
+        guard !isExiting else { return }
         removePidFile(id)
         let err = Self.logTail(logFileURL(id))
         guard intended[id] == true else {
             setState(id, .stopped, "")
             return
         }
+        // 按退出时的实际运行时长判断稳定，避免把等待重连的时间算进去。
+        if let t = startedAt[id], Date().timeIntervalSince(t) >= 60 { attempts[id] = 0 }
         let n = (attempts[id] ?? 0) + 1
         attempts[id] = n
         let delay = min(30.0, 1.5 * pow(2, Double(n - 1)))
@@ -331,14 +444,19 @@ final class TunnelManager: ObservableObject {
             lastError[id] = "第\(n)次尝试失败 (\(Self.clockText()))\n\(err)"
         }
         setState(id, .reconnecting, "↻ 第\(n)次重连 · \(Int(delay))s后重试")
-        let w = DispatchWorkItem { [weak self] in self?.spawn(id) }
-        restartWork[id] = w
+        let token = UUID()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.restartWork[id]?.token == token else { return }
+            self.restartWork[id] = nil
+            self.spawn(id)
+        }
+        restartWork[id] = (token, w)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: w)
     }
 
     func stop(_ id: String) {
         intended[id] = nil
-        restartWork[id]?.cancel()
+        restartWork[id]?.work.cancel()
         restartWork[id] = nil
         attempts[id] = 0
         if let p = procs[id] {
@@ -348,13 +466,23 @@ final class TunnelManager: ObservableObject {
         }
         if let pid = adoptedPids.removeValue(forKey: id) {
             removePidFile(id)
-            kill(pid, SIGTERM)
+            if processMatches(pid, args: argSigs[id] ?? []) { kill(pid, SIGTERM) }
         }
         setState(id, .stopped, "")
     }
 
     func stopAll() {
         for s in statuses { stop(s.id) }
+    }
+
+    /// 普通退出只停止 app 内的监控/重试，保留所有 SSH 进程和 PID 文件供下次校准。
+    func prepareForAppExit() {
+        isExiting = true
+        timer?.invalidate()
+        timer = nil
+        for pending in restartWork.values { pending.work.cancel() }
+        restartWork.removeAll()
+        for process in procs.values { process.terminationHandler = nil }
     }
 
     func errorText(_ id: String) -> String? {

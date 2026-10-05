@@ -54,7 +54,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // 隧道生命周期独立于 app：退出不杀 ssh（无终端的子进程会被 launchd 接管继续跑），
     // pid 文件留在 run/ 目录供下次启动接管。要停隧道用面板里的开关或「全部停止」。
-    func applicationWillTerminate(_ notification: Notification) {}
+    func applicationWillTerminate(_ notification: Notification) {
+        TunnelManager.shared.prepareForAppExit()
+    }
 }
 
 struct TunnelPanel: View {
@@ -64,6 +66,14 @@ struct TunnelPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let error = manager.configError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 8)
+            }
             if manager.statuses.isEmpty {
                 Text("暂无隧道 · 点右上角 ⚙ 添加")
                     .font(.caption)

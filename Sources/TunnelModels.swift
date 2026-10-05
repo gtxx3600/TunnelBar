@@ -176,31 +176,27 @@ struct AppConfig: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         nodes = try c.decodeIfPresent([NodeConfig].self, forKey: .nodes) ?? []
-        tunnels = try c.decodeIfPresent([TunnelConfig].self, forKey: .tunnels) ?? []
-
-        // 老格式隧道没有 nodeId → 丢弃，走下面的迁移重建
-        tunnels.removeAll { $0.nodeId.isEmpty }
+        tunnels = try c.decode([TunnelConfig].self, forKey: .tunnels)
 
         // v1 迁移: sshTarget 字符串 → 节点
-        if nodes.isEmpty {
+        if nodes.isEmpty && tunnels.contains(where: { $0.nodeId.isEmpty }) {
             struct LegacyTunnel: Decodable {
                 let id, name, sshTarget: String
                 let forwards: [String]?
                 let extraArgs: [String]?
                 let autoStart: Bool?
             }
-            if let legacy = try? c.decodeIfPresent([LegacyTunnel].self, forKey: .tunnels),
-               !legacy.isEmpty {
-                for lt in legacy {
-                    let (user, host) = AppConfig.splitUserHost(lt.sshTarget)
-                    let node = NodeConfig(id: "node-\(lt.id)", name: host.isEmpty ? lt.sshTarget : host,
-                                          host: host, user: user)
-                    nodes.append(node)
-                    tunnels.append(TunnelConfig(id: lt.id, name: lt.name, nodeId: node.id,
-                                                forwards: (lt.forwards ?? []).map { ForwardSpec.parse($0) },
-                                                extraArgs: lt.extraArgs ?? [],
-                                                autoStart: lt.autoStart ?? false))
-                }
+            let legacy = try c.decode([LegacyTunnel].self, forKey: .tunnels)
+            tunnels = []
+            for lt in legacy {
+                let (user, host) = AppConfig.splitUserHost(lt.sshTarget)
+                let node = NodeConfig(id: "node-\(lt.id)", name: host.isEmpty ? lt.sshTarget : host,
+                                      host: host, user: user)
+                nodes.append(node)
+                tunnels.append(TunnelConfig(id: lt.id, name: lt.name, nodeId: node.id,
+                                            forwards: (lt.forwards ?? []).map { ForwardSpec.parse($0) },
+                                            extraArgs: lt.extraArgs ?? [],
+                                            autoStart: lt.autoStart ?? false))
             }
         }
     }
