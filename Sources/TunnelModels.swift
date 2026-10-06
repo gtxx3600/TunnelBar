@@ -209,13 +209,7 @@ struct AppConfig: Codable, Equatable {
     }
 
     static func defaultConfig() -> AppConfig {
-        let node = NodeConfig(id: "node-example", name: "example", host: "example")
-        let tunnel = TunnelConfig(id: "database-forward", name: "数据库访问",
-                                  nodeId: node.id,
-                                  forwards: [ForwardSpec(bind: "127.0.0.1", port: "15432",
-                                                         host: "127.0.0.1", rport: "5432")],
-                                  autoStart: true)
-        return AppConfig(nodes: [node], tunnels: [tunnel])
+        AppConfig()
     }
 }
 

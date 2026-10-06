@@ -15,6 +15,7 @@ struct ConfigStore {
     let url: URL
 
     func load(createIfMissing: Bool) throws -> AppConfig {
+        try PrivateStorage.protectExistingStorage(config: url)
         guard FileManager.default.fileExists(atPath: url.path) else {
             guard createIfMissing else {
                 throw ConfigStoreError.invalid("配置文件不存在")
@@ -40,10 +41,10 @@ struct ConfigStore {
                 }
                 if try Data(contentsOf: backup) != data {
                     backup = url.appendingPathExtension("v1.\(UUID().uuidString).bak")
-                    try data.write(to: backup, options: .withoutOverwriting)
+                    try PrivateStorage.write(data, to: backup, options: .withoutOverwriting)
                 }
             } else {
-                try data.write(to: backup, options: .withoutOverwriting)
+                try PrivateStorage.write(data, to: backup, options: .withoutOverwriting)
             }
             try save(cfg)
         }
@@ -55,9 +56,7 @@ struct ConfigStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(cfg)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        try PrivateStorage.write(data, to: url)
     }
 
     private func validate(_ cfg: AppConfig) throws {

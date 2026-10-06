@@ -185,18 +185,11 @@ final class TunnelManager: ObservableObject {
     }
 
     private func freshLogHandle(_ id: String) -> FileHandle? {
-        try? FileManager.default.createDirectory(
-            at: runtimeDirectory, withIntermediateDirectories: true)
-        let url = logFileURL(id)
-        try? FileManager.default.removeItem(at: url)
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        return FileHandle(forWritingAtPath: url.path)
+        try? PrivateStorage.logHandle(at: logFileURL(id))
     }
 
     private func writePidFile(_ id: String, _ pid: pid_t) {
-        try? FileManager.default.createDirectory(
-            at: runtimeDirectory, withIntermediateDirectories: true)
-        try? String(pid).write(to: pidFileURL(id), atomically: true, encoding: .utf8)
+        try? PrivateStorage.write(Data(String(pid).utf8), to: pidFileURL(id))
     }
 
     private func removePidFile(_ id: String) {
@@ -400,7 +393,7 @@ final class TunnelManager: ObservableObject {
         p.arguments = args
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
-        p.standardError = freshLogHandle(id)
+        p.standardError = freshLogHandle(id) ?? FileHandle.nullDevice
 
         p.terminationHandler = { [weak self] exited in
             DispatchQueue.main.async {

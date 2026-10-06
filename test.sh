@@ -7,7 +7,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 clang Tests/mock-ssh.c -o "$TEST_DIR/mock-ssh"
 swiftc -swift-version 5 -parse-as-library \
-  Sources/TunnelModels.swift Sources/ConfigStore.swift Sources/TunnelManager.swift Sources/SSHConfigImport.swift \
+  Sources/TunnelModels.swift Sources/PrivateStorage.swift Sources/ConfigStore.swift \
+  Sources/TunnelManager.swift Sources/SSHConfigImport.swift \
   Tests/RegressionTests.swift -o "$TEST_DIR/regression-tests"
 "$TEST_DIR/regression-tests" "$TEST_DIR" "$TEST_DIR/mock-ssh"
 

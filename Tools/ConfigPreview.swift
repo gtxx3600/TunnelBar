@@ -14,7 +14,7 @@ struct ConfigPreview {
                                   forwards: [ForwardSpec(id: "local", bind: "127.0.0.1", port: "15432",
                                                          host: "127.0.0.1", rport: "5432")], autoStart: true)
         let db = TunnelConfig(id: "db", name: "开发数据库", nodeId: server.id,
-                              forwards: [ForwardSpec(bind: "127.0.0.1", port: "15432", host: "database.internal", rport: "5432")])
+                              forwards: [ForwardSpec(bind: "127.0.0.1", port: "15433", host: "database.example.net", rport: "5432")])
         let config = AppConfig(nodes: [example, server], tunnels: [tunnel, db])
         let runtime: [String: ConfigRuntimeState] = ["database": .running]
         try render("dark-tunnel", config: config, runtime: runtime, scheme: .dark, output: output)

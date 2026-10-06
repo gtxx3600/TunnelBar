@@ -111,11 +111,15 @@ struct SSHConfigImportTests {
         }
         print("PASS errors: partial reads, directories, empty candidates and missing configuration")
 
-        let baseline = AppConfig.defaultConfig()
+        let node = NodeConfig(id: "fixture-node", name: "Fixture", host: "fixture-host")
+        let baseline = AppConfig(nodes: [node], tunnels: [
+            TunnelConfig(id: "fixture-tunnel", name: "Fixture", nodeId: node.id,
+                         forwards: [ForwardSpec(port: "15432", host: "127.0.0.1", rport: "5432")])
+        ])
         var draft = baseline
         draft.nodes += SSHConfigImporter.nodes(from: included.hosts, selected: Set(included.hosts.map(\.alias)), existing: baseline.nodes)
         try check(draft.tunnels == baseline.tunnels && draft.nodes[0] == baseline.nodes[0], "Import changed existing resources")
-        try check(ConfigDraftRules.issues(in: draft).isEmpty && ConfigDraftRules.impact(from: baseline, to: draft, activeIDs: ["database-forward"]).description.isEmpty,
+        try check(ConfigDraftRules.issues(in: draft).isEmpty && ConfigDraftRules.impact(from: baseline, to: draft, activeIDs: ["fixture-tunnel"]).description.isEmpty,
                   "Adding imported nodes must not start, stop or reconnect tunnels on save")
         print("PASS draft integration: existing resources unchanged, valid nodes, no tunnel lifecycle impact")
     }

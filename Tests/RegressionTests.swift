@@ -132,6 +132,7 @@ struct RegressionTests {
 
         try configFailures(root: root, executable: executable)
         try migration(root: root, executable: executable)
+        try privateStorage(root: root, executable: executable)
         try restartRace(root: root, executable: executable)
         try reconnect(root: root, executable: executable)
         try recovery(root: root, executable: executable)
@@ -165,6 +166,73 @@ struct RegressionTests {
             try expect(currentPID == originalPID && reopened.isOn(id), "Saved imports must retain adoption on next startup")
         }
         print("PASS saving SSH node imports preserves running L/R/D PIDs and startup adoption")
+    }
+
+    static func privateStorage(root: URL, executable: URL) throws {
+        func mode(_ url: URL) throws -> Int {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+        }
+        let freshURL = root.appendingPathComponent("empty-startup/config.json")
+        let fresh = TunnelManager(configURL: freshURL, sshExecutable: executable)
+        defer { fresh.prepareForAppExit() }
+        try expect(fresh.current.nodes.isEmpty && fresh.current.tunnels.isEmpty && fresh.statuses.isEmpty,
+                   "First launch must create an empty configuration without starting a connection")
+        let freshDirectoryMode = try mode(freshURL.deletingLastPathComponent())
+        let freshFileMode = try mode(freshURL)
+        try expect(freshDirectoryMode == 0o700 && freshFileMode == 0o600, "New configuration must be private")
+
+        let context = try TestContext(root: root, executable: executable, name: "private-storage", autoStart: true, allTypes: true)
+        defer { context.cleanup() }
+        let manager = context.manager()
+        let pids = try Dictionary(uniqueKeysWithValues: context.config.tunnels.map { ($0.id, try context.pid($0.id)) })
+        let backup = context.url.appendingPathExtension("v1.bak")
+        let previous = Data("previous configuration fixture".utf8)
+        try previous.write(to: backup)
+        let configBytes = try Data(contentsOf: context.url)
+        let directory = context.url.deletingLastPathComponent()
+        let files = [context.url, backup] + (try FileManager.default.contentsOfDirectory(at: context.runDir, includingPropertiesForKeys: nil))
+        for file in files {
+            if file != backup {
+                let permissions = try mode(file)
+                try expect(permissions == 0o600, "New configuration, PID and log files must use 0600")
+            }
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        }
+        for folder in [directory, context.runDir] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+        }
+        try expect(manager.loadConfig(), "Permission repair must load the existing configuration")
+        for folder in [directory, context.runDir] {
+            let permissions = try mode(folder)
+            try expect(permissions == 0o700, "Existing app directories must be repaired to 0700")
+        }
+        for file in files {
+            let permissions = try mode(file)
+            try expect(permissions == 0o600, "Existing app files and backups must be repaired to 0600")
+        }
+        let retained = try Data(contentsOf: context.url)
+        let retainedBackup = try Data(contentsOf: backup)
+        try expect(retained == configBytes && retainedBackup == previous, "Permission repair must preserve exact file contents")
+        for (id, pid) in pids {
+            let currentPID = try context.pid(id)
+            try expect(currentPID == pid && kill(pid, 0) == 0 && manager.isOn(id), "Permission repair must preserve L/R/D processes")
+        }
+
+        let target = root.appendingPathComponent("external-file")
+        try previous.write(to: target)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        let link = directory.appendingPathComponent("linked-config.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        do {
+            try PrivateStorage.write(Data("replacement".utf8), to: link)
+            throw TestFailure(description: "Private storage must reject a symlink target")
+        } catch is TestFailure { throw TestFailure(description: "Private storage must reject a symlink target") }
+        catch {}
+        let externalBytes = try Data(contentsOf: target)
+        let externalMode = try mode(target)
+        try expect(externalBytes == previous && externalMode == 0o644, "Rejected paths must not alter unrelated files")
+        print("PASS private storage: empty startup, 0700/0600 creation and repair, exact contents, L/R/D continuity, symlink safety")
     }
 
     static func configFailures(root: URL, executable: URL) throws {
@@ -238,6 +306,8 @@ struct RegressionTests {
         let migrated = try store.load(createIfMissing: false)
         let backedUp = try Data(contentsOf: backup)
         try expect(backedUp == legacy, "Migration backup must contain exact original bytes")
+        let backupAttributes = try FileManager.default.attributesOfItem(atPath: backup.path)
+        try expect((backupAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600, "Migration backups must be private")
         try expect(migrated.nodes[0].host == "legacy-test" && migrated.nodes[0].user == "user", "Legacy target must migrate")
         let again = try store.load(createIfMissing: false)
         try expect(again == migrated, "Migrated config must load unchanged")
