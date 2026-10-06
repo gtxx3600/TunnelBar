@@ -40,12 +40,41 @@ struct ConfigPreview {
         try render("light-empty", config: AppConfig(), scheme: .light, output: output)
         try render("dark-minimum", config: config, runtime: runtime, scheme: .dark,
                    size: NSSize(width: 820, height: 600), output: output)
+
+        let sshSource = URL(fileURLWithPath: "/Users/example/.ssh/config")
+        let hosts = ["example", "production", "development", "bastion", "database", "a-long-server-alias-for-staging-environment"].enumerated().map {
+            SSHConfigHost(alias: $0.element, source: sshSource, line: $0.offset * 5 + 1)
+        }
+        let imports = SSHConfigImportResult(source: sshSource, hosts: hosts)
+        for scheme in [ColorScheme.dark, .light] {
+            try render(scheme == .dark ? "dark-ssh-import" : "light-ssh-import",
+                       content: SSHConfigImportView(existingNodes: [example], initialState: .loaded(imports),
+                                                    initialSelection: ["production", "development"], onImport: { _ in }),
+                       scheme: scheme, size: NSSize(width: 540, height: 480), output: output)
+        }
+        let cases: [(String, SSHConfigImportState)] = [
+            ("light-ssh-import-empty", .loaded(SSHConfigImportResult(source: sshSource))),
+            ("dark-ssh-import-error", .failed("未找到 ~/.ssh/config。请先在 SSH 配置中添加 Host 别名。")),
+            ("light-ssh-import-warning", .loaded(SSHConfigImportResult(source: sshSource, hosts: hosts,
+                                                                     warnings: ["config:30：条件 Include 中的额外别名未展开。"]))),
+            ("dark-ssh-import-loading", .loading)
+        ]
+        for (name, state) in cases {
+            try render(name, content: SSHConfigImportView(existingNodes: [example], initialState: state, onImport: { _ in }),
+                       scheme: name.hasPrefix("dark") ? .dark : .light, size: NSSize(width: 540, height: 480), output: output)
+        }
     }
 
     private static func render(_ name: String, config: AppConfig, draft: AppConfig? = nil,
                                runtime: [String: ConfigRuntimeState] = [:], selection: ConfigResource? = nil,
                                scheme: ColorScheme, size: NSSize = NSSize(width: 920, height: 700), output: URL) throws {
-        let view = ConfigWorkspaceView(config: config, runtime: runtime, selection: selection, initialDraft: draft)
+        try render(name, content: ConfigWorkspaceView(config: config, runtime: runtime, selection: selection, initialDraft: draft),
+                   scheme: scheme, size: size, output: output)
+    }
+
+    private static func render<Content: View>(_ name: String, content: Content,
+                                              scheme: ColorScheme, size: NSSize, output: URL) throws {
+        let view = content
             .environment(\.colorScheme, scheme)
             .environment(\.controlActiveState, .active)
             .frame(width: size.width, height: size.height)

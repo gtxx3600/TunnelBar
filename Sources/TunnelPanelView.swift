@@ -24,6 +24,9 @@ struct TunnelPanelActions {
 }
 
 struct TunnelPanelView: View {
+    static let panelWidth: CGFloat = 340
+    static let maximumListHeight: CGFloat = 300
+
     let items: [TunnelPanelItem]
     var configError: String? = nil
     var actions = TunnelPanelActions()
@@ -33,11 +36,11 @@ struct TunnelPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.bottom, 12)
+                .padding(.bottom, 8)
 
             if let error = configError {
                 configNotice(error)
-                    .padding(.bottom, 10)
+                    .padding(.bottom, 8)
             }
 
             if items.isEmpty {
@@ -46,38 +49,38 @@ struct TunnelPanelView: View {
                 ViewThatFits(in: .vertical) {
                     cards.fixedSize(horizontal: false, vertical: true)
                     ScrollView { cards }
-                        .frame(height: 360)
+                        .frame(height: Self.maximumListHeight)
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: Self.maximumListHeight)
             }
 
             Divider()
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
             footer
         }
-        .padding(14)
-        .frame(width: 396)
+        .padding(10)
+        .frame(width: Self.panelWidth)
         // MenuBarExtra 的窗口会给出额外的高度；按内容的理想高度布局，
         // 避免可伸展的列表区域把标题和底栏挤出弹窗。
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "arrow.left.arrow.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             Text("TunnelBar")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
             Spacer()
             Text(summary)
-                .font(.system(size: 11))
+                .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
         }
-        .frame(height: 20)
+        .frame(height: 18)
     }
 
     private var summary: String {
@@ -91,7 +94,7 @@ struct TunnelPanelView: View {
     }
 
     private var cards: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             ForEach(items) { item in
                 TunnelCardView(item: item, toggle: actions.toggle,
                                initiallyExpanded: expandErrorsInitially)
@@ -112,14 +115,14 @@ struct TunnelPanelView: View {
                 .help(error)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .padding(8)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             Image(systemName: configError == nil ? "point.3.connected.trianglepath.dotted" : "doc.badge.gearshape")
-                .font(.system(size: 25, weight: .light))
+                .font(.system(size: 22, weight: .light))
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 3)
             Text(configError == nil ? "还没有隧道" : "配置暂时不可用")
@@ -135,11 +138,11 @@ struct TunnelPanelView: View {
             .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
+        .padding(.vertical, 14)
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Button(action: actions.configure) {
                 Label("配置", systemImage: "slider.horizontal.3")
             }
@@ -153,7 +156,7 @@ struct TunnelPanelView: View {
 
             Spacer()
             Label("退出不停止隧道", systemImage: "link")
-                .font(.system(size: 10.5))
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .help("退出后 SSH 连接继续运行，下次启动自动校准状态")
 
@@ -180,9 +183,9 @@ struct TunnelPanelView: View {
                 .keyboardShortcut("q", modifiers: .command)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 28)
+                    .frame(width: 26, height: 24)
                     .contentShape(RoundedRectangle(cornerRadius: 6))
             }
             .menuStyle(.borderlessButton)
@@ -191,7 +194,7 @@ struct TunnelPanelView: View {
             .help("更多操作：批量启停、载入配置与退出")
             .accessibilityLabel("更多操作")
         }
-        .frame(height: 28)
+        .frame(height: 24)
     }
 }
 
@@ -211,10 +214,10 @@ private struct TunnelCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 Text(item.name)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(item.name)
@@ -249,10 +252,10 @@ private struct TunnelCardView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help("SSH 节点：\(item.nodeName)")
-                    .frame(maxWidth: 130, alignment: .trailing)
+                    .frame(maxWidth: 100, alignment: .trailing)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 ForEach(visibleForwards) { forward in
                     ForwardRouteView(forward: forward)
                 }
@@ -298,16 +301,16 @@ private struct TunnelCardView: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(9)
+                        .padding(8)
                         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
                 }
             }
         }
-        .padding(12)
+        .padding(10)
         .background(Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.025),
-                    in: RoundedRectangle(cornerRadius: 10))
+                    in: RoundedRectangle(cornerRadius: 8))
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.09 : 0.08), lineWidth: 0.5)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: showsError)
@@ -350,14 +353,14 @@ private struct ForwardRouteView: View {
     private let loopbacks: Set<String> = ["", "127.0.0.1", "localhost", "::1", "[::1]"]
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Text(typeLabel)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 40, height: 19)
+                .frame(width: 36, height: 17)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 4))
             Text(source)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Color.primary.opacity(0.8))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -367,7 +370,7 @@ private struct ForwardRouteView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text(destination)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Color.primary.opacity(0.8))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -403,10 +406,10 @@ private struct PanelQuietButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .medium))
+            .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .frame(height: 28)
+            .padding(.horizontal, 6)
+            .frame(height: 24)
             .background(Color.primary.opacity(configuration.isPressed ? 0.1 : isHovered ? 0.055 : 0),
                         in: RoundedRectangle(cornerRadius: 6))
             .contentShape(RoundedRectangle(cornerRadius: 6))

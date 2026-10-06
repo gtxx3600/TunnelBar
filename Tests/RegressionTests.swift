@@ -136,7 +136,35 @@ struct RegressionTests {
         try reconnect(root: root, executable: executable)
         try recovery(root: root, executable: executable)
         try exitAndAdopt(root: root, executable: executable)
+        try importNodesPreservesTunnels(root: root, executable: executable)
         print("All regression tests passed (isolated config + mock SSH; no network connections).")
+    }
+
+    static func importNodesPreservesTunnels(root: URL, executable: URL) throws {
+        let context = try TestContext(root: root, executable: executable, name: "ssh-node-import", autoStart: true, allTypes: true)
+        defer { context.cleanup() }
+        let manager = context.manager()
+        let pids = try Dictionary(uniqueKeysWithValues: context.config.tunnels.map { ($0.id, try context.pid($0.id)) })
+        let source = context.url.deletingLastPathComponent().appendingPathComponent("ssh-config")
+        try "Host imported-a imported-b\n    ProxyJump inherited-jump\n".write(to: source, atomically: true, encoding: .utf8)
+        let parsed = try SSHConfigImporter.read(source, home: root)
+        var draft = manager.current
+        draft.nodes += SSHConfigImporter.nodes(from: parsed.hosts, selected: Set(parsed.hosts.map(\.alias)), existing: draft.nodes)
+        try manager.applyConfig(draft)
+        pump()
+        try expect(manager.current.nodes.count == 3 && manager.current.tunnels == context.config.tunnels,
+                   "Saving imported nodes must preserve existing tunnel configurations")
+        for (id, originalPID) in pids {
+            let currentPID = try context.pid(id)
+            try expect(currentPID == originalPID && kill(originalPID, 0) == 0 && manager.isOn(id),
+                       "Saving imported nodes must retain each running L/R/D process")
+        }
+        let reopened = context.manager()
+        for (id, originalPID) in pids {
+            let currentPID = try context.pid(id)
+            try expect(currentPID == originalPID && reopened.isOn(id), "Saved imports must retain adoption on next startup")
+        }
+        print("PASS saving SSH node imports preserves running L/R/D PIDs and startup adoption")
     }
 
     static func configFailures(root: URL, executable: URL) throws {

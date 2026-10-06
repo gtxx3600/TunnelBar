@@ -17,10 +17,10 @@ private struct PanelSizingCheck: Layout {
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         guard let content = subviews.first else { return .zero }
-        let ideal = content.sizeThatFits(ProposedViewSize(width: 396, height: nil))
+        let ideal = content.sizeThatFits(ProposedViewSize(width: TunnelPanelView.panelWidth, height: nil))
         result.ideal = ideal
         result.constrained = [600.0, 1000.0].map { height in
-            content.sizeThatFits(ProposedViewSize(width: 396, height: height))
+            content.sizeThatFits(ProposedViewSize(width: TunnelPanelView.panelWidth, height: height))
         }
         return content.sizeThatFits(proposal)
     }
@@ -101,14 +101,15 @@ struct PanelPreview {
         }
         let hosting = NSHostingView(rootView: content)
         hosting.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-        let window = PreviewWindow(contentRect: NSRect(x: 0, y: 0, width: 396, height: 600),
+        let width = TunnelPanelView.panelWidth
+        let window = PreviewWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
                                    styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = hosting.appearance
         window.contentView = hosting
-        hosting.setFrameSize(NSSize(width: 396, height: 600))
+        hosting.setFrameSize(NSSize(width: width, height: 600))
         hosting.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        let size = NSSize(width: 396, height: ceil(hosting.fittingSize.height))
+        let size = NSSize(width: width, height: ceil(hosting.fittingSize.height))
         window.setContentSize(size)
         hosting.setFrameSize(size)
         hosting.layoutSubtreeIfNeeded()

@@ -15,6 +15,7 @@ struct ConfigWorkspaceView: View {
     @State private var deletion: ConfigResource?
     @State private var saveError: String?
     @State private var didSave = false
+    @State private var showsSSHImport = false
 
     init(config: AppConfig, runtime: [String: ConfigRuntimeState] = [:],
          configError: String? = nil, selection: ConfigResource? = nil,
@@ -57,6 +58,14 @@ struct ConfigWorkspaceView: View {
             } message: {
                 Text(deletionMessage)
             }
+        .sheet(isPresented: $showsSSHImport) {
+            SSHConfigImportView(existingNodes: draft.nodes) { nodes in
+                guard !nodes.isEmpty else { return }
+                draft.nodes.append(contentsOf: nodes)
+                selected = .node(nodes[0].id); search = ""; didSave = false; saveError = nil
+                showsSSHImport = false
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -122,17 +131,25 @@ struct ConfigWorkspaceView: View {
             .scrollContentBackground(.hidden)
 
             Divider().padding(.horizontal, 12)
-            Menu {
-                Button("新建隧道", action: addTunnel).disabled(draft.nodes.isEmpty)
-                Button("新建 SSH 节点", action: addNode)
-            } label: {
-                Label("添加资源", systemImage: "plus")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 11) {
+                Menu {
+                    Button("新建隧道", action: addTunnel).disabled(draft.nodes.isEmpty)
+                    Button("新建 SSH 节点", action: addNode)
+                    Divider()
+                    Button("从 SSH 配置导入…") { showsSSHImport = true }
+                } label: {
+                    Label("添加资源", systemImage: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .menuStyle(.borderlessButton)
+                .help(draft.nodes.isEmpty ? "先添加 SSH 节点，再创建隧道" : "创建 SSH 节点或隧道")
+                Button { showsSSHImport = true } label: {
+                    Label("从 SSH 配置导入…", systemImage: "square.and.arrow.down")
+                        .font(.system(size: 11.5)).foregroundStyle(Color.accentColor)
+                }.buttonStyle(.plain)
             }
-            .menuStyle(.borderlessButton)
             .padding(.horizontal, 16).padding(.vertical, 13)
-            .help(draft.nodes.isEmpty ? "先添加 SSH 节点，再创建隧道" : "创建 SSH 节点或隧道")
         }
         .background(Color.primary.opacity(0.025))
     }
@@ -234,6 +251,7 @@ struct ConfigWorkspaceView: View {
             Text(draft.nodes.isEmpty ? "添加服务器地址或 SSH 别名，再创建端口转发。" : "在左侧选择资源，编辑连接与转发设置。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             Button("添加 SSH 节点", action: addNode).buttonStyle(.borderedProminent).padding(.top, 5)
+            Button("从 SSH 配置导入…") { showsSSHImport = true }.buttonStyle(.bordered)
             if !draft.nodes.isEmpty { Button("新建隧道", action: addTunnel).buttonStyle(.bordered) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
