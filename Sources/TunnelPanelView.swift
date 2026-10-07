@@ -11,6 +11,42 @@ struct TunnelPanelItem: Identifiable {
     var uptime: String? = nil
     var detail: String = ""
     var error: String? = nil
+    var groupId: String? = nil
+}
+
+struct TunnelPanelGroup: Identifiable {
+    let groupId: String?
+    let name: String
+    let items: [TunnelPanelItem]
+    var id: String { groupId.map { "group:\($0)" } ?? "ungrouped" }
+    var establishedCount: Int { items.filter { $0.state == .running }.count }
+    var attentionCount: Int {
+        items.filter { [.needsAttention, .reconnecting, .unverified].contains($0.state) }.count
+    }
+    var canStart: Bool { items.contains { !$0.isOn } }
+    var canStop: Bool { items.contains(where: \.isOn) }
+
+    static func sections(groups: [TunnelGroupConfig], items: [TunnelPanelItem]) -> [TunnelPanelGroup] {
+        var sections = groups.map { group in
+            TunnelPanelGroup(groupId: group.id, name: group.name, items: items.filter { $0.groupId == group.id })
+        }
+        let groupIDs = Set(groups.map(\.id))
+        let ungrouped = items.filter { item in item.groupId.map { !groupIDs.contains($0) } ?? true }
+        if !ungrouped.isEmpty { sections.append(TunnelPanelGroup(groupId: nil, name: "未分组", items: ungrouped)) }
+        return sections
+    }
+}
+
+/// 折叠是本机展示偏好，不写入连接配置；预览和测试不访问 UserDefaults。
+enum TunnelGroupCollapseState {
+    static func decode(_ value: String) -> Set<String> {
+        Set((try? JSONDecoder().decode([String].self, from: Data(value.utf8))) ?? [])
+    }
+    static func toggled(_ id: String, in value: String) -> String {
+        var ids = decode(value)
+        if !ids.insert(id).inserted { ids.remove(id) }
+        return String(decoding: (try? JSONEncoder().encode(ids.sorted())) ?? Data("[]".utf8), as: UTF8.self)
+    }
 }
 
 struct TunnelPanelActions {
@@ -18,6 +54,9 @@ struct TunnelPanelActions {
     var configure: () -> Void = {}
     var startAll: () -> Void = {}
     var stopAll: () -> Void = {}
+    var startGroup: (String?) -> Void = { _ in }
+    var stopGroup: (String?) -> Void = { _ in }
+    var toggleGroup: (String) -> Void = { _ in }
     var openConfig: () -> Void = {}
     var reload: () -> Void = {}
     var quit: () -> Void = {}
@@ -28,6 +67,8 @@ struct TunnelPanelView: View {
     static let maximumListHeight: CGFloat = 300
 
     let items: [TunnelPanelItem]
+    var groups: [TunnelGroupConfig] = []
+    var collapsedGroupIDs: Set<String> = []
     var configError: String? = nil
     var actions = TunnelPanelActions()
     var expandErrorsInitially = false
@@ -43,7 +84,7 @@ struct TunnelPanelView: View {
                     .padding(.bottom, 8)
             }
 
-            if items.isEmpty {
+            if items.isEmpty && groups.isEmpty {
                 emptyState
             } else {
                 ViewThatFits(in: .vertical) {
@@ -87,20 +128,76 @@ struct TunnelPanelView: View {
         let running = items.filter { $0.state == .running }.count
         let retrying = items.filter { $0.state == .reconnecting }.count
         if items.isEmpty { return "SSH 隧道管理" }
-        if retrying > 0 { return "\(running) 条运行 · \(retrying) 条重连" }
-        if running == items.count { return "\(running) 条运行中" }
-        if running > 0 { return "\(running) / \(items.count) 条运行中" }
+        let attention = items.filter { $0.state == .needsAttention || $0.state == .unverified }.count
+        let connecting = items.filter { $0.state == .connecting }.count
+        if attention > 0 { return "\(running) 条已建立 · \(attention) 条待处理" }
+        if connecting > 0 { return "\(running) 条已建立 · \(connecting) 条连接中" }
+        if retrying > 0 { return "\(running) 条已建立 · \(retrying) 条重连" }
+        if running == items.count { return "\(running) 条已建立" }
+        if running > 0 { return "\(running) / \(items.count) 条已建立" }
         return "\(items.count) 条已停止"
     }
 
     private var cards: some View {
-        VStack(spacing: 6) {
-            ForEach(items) { item in
-                TunnelCardView(item: item, toggle: actions.toggle,
-                               initiallyExpanded: expandErrorsInitially)
+        VStack(spacing: 10) {
+            ForEach(TunnelPanelGroup.sections(groups: groups, items: items)) { group in
+                VStack(spacing: 6) {
+                    groupHeader(group)
+                    if !collapsedGroupIDs.contains(group.id) {
+                        if group.items.isEmpty {
+                            Text("还没有隧道，可在配置中添加")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                        }
+                        ForEach(group.items) { item in
+                            TunnelCardView(item: item, toggle: actions.toggle,
+                                           initiallyExpanded: expandErrorsInitially)
+                        }
+                    }
+                }
             }
         }
         .padding(.vertical, 1)
+    }
+
+    private func groupHeader(_ group: TunnelPanelGroup) -> some View {
+        HStack(spacing: 6) {
+            Button { actions.toggleGroup(group.id) } label: {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: collapsedGroupIDs.contains(group.id) ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold)).frame(width: 10).padding(.top, 3)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(group.name).font(.system(size: 12, weight: .semibold))
+                            .lineLimit(1).truncationMode(.middle)
+                        HStack(spacing: 6) {
+                            Text("\(group.establishedCount) / \(group.items.count) 已建立")
+                                .foregroundStyle(.secondary).monospacedDigit()
+                            if group.attentionCount > 0 {
+                                Text("\(group.attentionCount) 需关注").foregroundStyle(.orange)
+                            }
+                        }.font(.system(size: 10)).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help((collapsedGroupIDs.contains(group.id) ? "展开" : "收起") + "「\(group.name)」")
+            .accessibilityLabel("分组：\(group.name)")
+            .accessibilityValue("\(group.establishedCount) / \(group.items.count) 已建立，\(group.attentionCount) 条需关注，" + (collapsedGroupIDs.contains(group.id) ? "已折叠" : "已展开"))
+
+            Button("启动本组") { actions.startGroup(group.groupId) }
+                .disabled(!group.canStart)
+                .help("启动「\(group.name)」中尚未启用的隧道")
+                .accessibilityLabel("启动本组：\(group.name)")
+            Button("停止本组") { actions.stopGroup(group.groupId) }
+                .disabled(!group.canStop)
+                .help("停止「\(group.name)」中的隧道，包括等待重连的连接")
+                .accessibilityLabel("停止本组：\(group.name)")
+        }
+        .buttonStyle(.borderless).font(.system(size: 10.5))
+        .padding(.horizontal, 6).padding(.vertical, 7)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func configNotice(_ error: String) -> some View {
@@ -239,6 +336,7 @@ private struct TunnelCardView: View {
                 Text(statusLabel)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(statusColor)
+                    .help(item.state == .running ? "SSH 连接与转发已建立；目标服务未主动探测" : item.detail)
                 if item.state == .running, let uptime = item.uptime {
                     Text(uptime)
                         .font(.system(size: 11))
@@ -271,7 +369,7 @@ private struct TunnelCardView: View {
             }
             .padding(.top, 1)
 
-            if item.state == .reconnecting, !item.detail.isEmpty {
+            if item.state != .running && item.state != .stopped, !item.detail.isEmpty {
                 Text(item.detail.replacingOccurrences(of: "↻ ", with: ""))
                     .font(.system(size: 11))
                     .foregroundStyle(statusColor)
@@ -284,7 +382,7 @@ private struct TunnelCardView: View {
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "exclamationmark.circle")
-                        Text(showsError ? "收起错误" : "查看错误")
+                        Text(showsError ? "收起诊断" : "查看诊断")
                         Spacer()
                         Image(systemName: showsError ? "chevron.up" : "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
@@ -299,11 +397,15 @@ private struct TunnelCardView: View {
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
                 }
+            }
+            if item.state == .needsAttention {
+                Button("重试连接") { toggle(item.id, true) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("修改配置或排除问题后，重新执行预检并连接")
             }
         }
         .padding(10)
@@ -323,7 +425,10 @@ private struct TunnelCardView: View {
 
     private var statusLabel: String {
         switch item.state {
-        case .running: return "运行中"
+        case .running: return "已建立"
+        case .connecting: return "连接中"
+        case .needsAttention: return "需要处理"
+        case .unverified: return "待确认"
         case .reconnecting: return "重连中"
         case .stopped: return "已停止"
         }
@@ -334,11 +439,13 @@ private struct TunnelCardView: View {
         case .running:
             return colorScheme == .dark ? Color(red: 0.43, green: 0.85, blue: 0.62)
                 : Color(red: 0.15, green: 0.43, blue: 0.28)
-        case .reconnecting:
+        case .reconnecting, .connecting, .unverified:
             return colorScheme == .dark ? Color(red: 0.95, green: 0.72, blue: 0.37)
                 : Color(red: 0.54, green: 0.34, blue: 0.06)
         case .stopped:
             return .secondary
+        case .needsAttention:
+            return errorColor
         }
     }
 

@@ -8,13 +8,13 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 clang Tests/mock-ssh.c -o "$TEST_DIR/mock-ssh"
 swiftc -swift-version 5 -parse-as-library \
   Sources/TunnelModels.swift Sources/PrivateStorage.swift Sources/ConfigStore.swift \
-  Sources/TunnelManager.swift Sources/SSHConfigImport.swift \
+  Sources/TunnelManager.swift Sources/TunnelDiagnostics.swift Sources/TunnelPreflight.swift Sources/SSHConfigImport.swift Sources/TunnelPanelView.swift \
   Tests/RegressionTests.swift -o "$TEST_DIR/regression-tests"
 "$TEST_DIR/regression-tests" "$TEST_DIR" "$TEST_DIR/mock-ssh"
 
 # 配置编辑器草稿规则使用纯数据测试，不读在线配置。
 swiftc -swift-version 5 -parse-as-library \
-  Sources/TunnelModels.swift Sources/ConfigDraft.swift Tests/ConfigDraftTests.swift \
+  Sources/TunnelModels.swift Sources/ConfigDraft.swift Sources/TunnelTemplates.swift Sources/TunnelPreflight.swift Sources/TunnelDiagnostics.swift Tests/ConfigDraftTests.swift \
   -o "$TEST_DIR/config-draft-tests"
 "$TEST_DIR/config-draft-tests"
 
@@ -23,3 +23,8 @@ swiftc -swift-version 5 -parse-as-library \
   Sources/TunnelModels.swift Sources/ConfigDraft.swift Sources/SSHConfigImport.swift \
   Tests/SSHConfigImportTests.swift -o "$TEST_DIR/ssh-config-import-tests"
 "$TEST_DIR/ssh-config-import-tests"
+
+swiftc -swift-version 5 -parse-as-library \
+  Sources/TunnelModels.swift Sources/TunnelDiagnostics.swift Sources/TunnelPreflight.swift \
+  Tests/ConnectionTests.swift -o "$TEST_DIR/connection-tests"
+"$TEST_DIR/connection-tests"

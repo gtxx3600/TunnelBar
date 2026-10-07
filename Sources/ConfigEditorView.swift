@@ -16,6 +16,7 @@ struct ConfigWorkspaceView: View {
     @State private var saveError: String?
     @State private var didSave = false
     @State private var showsSSHImport = false
+    @State private var showsTemplates = false
 
     init(config: AppConfig, runtime: [String: ConfigRuntimeState] = [:],
          configError: String? = nil, selection: ConfigResource? = nil,
@@ -24,13 +25,14 @@ struct ConfigWorkspaceView: View {
         _draft = State(initialValue: initialDraft ?? config)
         _baseline = State(initialValue: config)
         _selected = State(initialValue: selection ?? config.tunnels.first.map { .tunnel($0.id) }
+                          ?? config.groups.first.map { .group($0.id) }
                           ?? config.nodes.first.map { .node($0.id) })
     }
 
     private var isDirty: Bool { draft != baseline }
     private var issues: [ConfigIssue] { ConfigDraftRules.issues(in: draft) }
     private var impact: ConfigSaveImpact {
-        ConfigDraftRules.impact(from: baseline, to: draft, activeIDs: Set(runtime.keys))
+        ConfigDraftRules.impact(from: baseline, to: draft, activeIDs: Set(runtime.filter { $0.value.isActive }.keys))
     }
 
     var body: some View {
@@ -66,6 +68,16 @@ struct ConfigWorkspaceView: View {
                 showsSSHImport = false
             }
         }
+        .sheet(isPresented: $showsTemplates) {
+            TunnelTemplatePicker(nodes: draft.nodes, groups: draft.groups,
+                                 selectedNode: preferredNodeID, selectedGroup: preferredGroupID) { template, nodeID, groupID in
+                var tunnel = template.make(nodeID: nodeID, existing: draft.tunnels)
+                tunnel.groupId = groupID
+                draft.tunnels.append(tunnel)
+                selected = .tunnel(tunnel.id); search = ""; didSave = false; saveError = nil
+                showsTemplates = false
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -75,9 +87,9 @@ struct ConfigWorkspaceView: View {
                 Text("连接配置").font(.system(size: 12)).foregroundStyle(.secondary)
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("搜索节点或隧道", text: $search)
+                    TextField("搜索分组、隧道或节点", text: $search)
                         .textFieldStyle(.plain)
-                        .accessibilityLabel("搜索节点或隧道")
+                        .accessibilityLabel("搜索分组、隧道或节点")
                     if !search.isEmpty {
                         Button { search = "" } label: {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
@@ -93,12 +105,32 @@ struct ConfigWorkspaceView: View {
 
             List(selection: $selected) {
                 Section {
+                    ForEach(filteredGroups) { group in
+                        resourceRow(name: group.name.isEmpty ? "未命名分组" : group.name,
+                                    subtitle: "\(draft.tunnelIDs(inGroup: group.id).count) 条隧道",
+                                    icon: "folder", resource: .group(group.id))
+                            .tag(ConfigResource.group(group.id))
+                            .contextMenu {
+                                Button("删除分组…", role: .destructive) { deletion = .group(group.id) }
+                            }
+                    }
+                    if draft.groups.isEmpty {
+                        Button("新建分组", action: addGroup)
+                            .font(.system(size: 11)).buttonStyle(.link)
+                    }
+                } header: {
+                    sectionLabel("分组", count: draft.groups.count)
+                }
+                Section {
                     ForEach(filteredTunnels) { tunnel in
                         resourceRow(name: tunnel.name.isEmpty ? "未命名隧道" : tunnel.name,
-                                    subtitle: "\(nodeName(tunnel.nodeId)) · \(tunnel.forwards.count) 条规则",
+                                    subtitle: "\(draft.groupName(tunnel.groupId)) · \(nodeName(tunnel.nodeId))",
                                     icon: "arrow.left.arrow.right", resource: .tunnel(tunnel.id))
                             .tag(ConfigResource.tunnel(tunnel.id))
-                            .contextMenu { Button("删除隧道…", role: .destructive) { deletion = .tunnel(tunnel.id) } }
+                            .contextMenu {
+                                Button("复制隧道") { duplicateTunnel(tunnel.id) }
+                                Button("删除隧道…", role: .destructive) { deletion = .tunnel(tunnel.id) }
+                            }
                     }
                     if draft.tunnels.isEmpty {
                         Text("还没有隧道").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -123,7 +155,7 @@ struct ConfigWorkspaceView: View {
                 } header: {
                     sectionLabel("SSH 节点", count: draft.nodes.count)
                 }
-                if !search.isEmpty && filteredTunnels.isEmpty && filteredNodes.isEmpty {
+                if !search.isEmpty && filteredGroups.isEmpty && filteredTunnels.isEmpty && filteredNodes.isEmpty {
                     Text("没有匹配的资源").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
@@ -133,6 +165,7 @@ struct ConfigWorkspaceView: View {
             Divider().padding(.horizontal, 12)
             VStack(alignment: .leading, spacing: 11) {
                 Menu {
+                    Button("新建分组", action: addGroup)
                     Button("新建隧道", action: addTunnel).disabled(draft.nodes.isEmpty)
                     Button("新建 SSH 节点", action: addNode)
                     Divider()
@@ -143,7 +176,7 @@ struct ConfigWorkspaceView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .menuStyle(.borderlessButton)
-                .help(draft.nodes.isEmpty ? "先添加 SSH 节点，再创建隧道" : "创建 SSH 节点或隧道")
+                .help("创建分组、隧道或 SSH 节点")
                 Button { showsSSHImport = true } label: {
                     Label("从 SSH 配置导入…", systemImage: "square.and.arrow.down")
                         .font(.system(size: 11.5)).foregroundStyle(Color.accentColor)
@@ -176,7 +209,7 @@ struct ConfigWorkspaceView: View {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).help("配置需要补全")
             } else if case .tunnel(let id) = resource, let state = runtime[id] {
                 Circle().fill(state == .running ? Color.green : Color.orange).frame(width: 6, height: 6)
-                    .padding(.top, 5).help(state == .running ? "运行中" : "重连中")
+                    .padding(.top, 5).help(state.label)
             }
         }
         .padding(.vertical, 5)
@@ -186,11 +219,18 @@ struct ConfigWorkspaceView: View {
     @ViewBuilder private var detail: some View {
         if let selected {
             switch selected {
+            case .group(let id):
+                if let index = draft.groups.firstIndex(where: { $0.id == id }) {
+                    detailScroll(title: draft.groups[index].name, subtitle: "项目分组", icon: "folder") {
+                        groupForm(index)
+                    }
+                } else { emptyDetail }
             case .tunnel(let id):
                 if let index = draft.tunnels.firstIndex(where: { $0.id == id }) {
                     detailScroll(title: draft.tunnels[index].name, subtitle: "隧道设置", icon: "arrow.left.arrow.right") {
-                        TunnelConfigForm(tunnel: $draft.tunnels[index], nodes: draft.nodes,
+                        TunnelConfigForm(tunnel: $draft.tunnels[index], nodes: draft.nodes, groups: draft.groups,
                                          isNew: !baseline.tunnels.contains { $0.id == id },
+                                         warnings: TunnelPreflight.warnings(for: draft.tunnels[index], in: draft),
                                          editNode: { self.selected = .node($0) })
                             .id(id)
                     }
@@ -209,6 +249,57 @@ struct ConfigWorkspaceView: View {
         } else { emptyDetail }
     }
 
+    private func groupForm(_ index: Int) -> some View {
+        let group = draft.groups[index]
+        let members = draft.tunnels.filter { $0.groupId == group.id }
+        let candidates = draft.tunnels.filter { $0.groupId != group.id }
+        return VStack(spacing: 16) {
+            WorkspaceSection("分组设置", icon: "folder") {
+                ConfigField("分组名称", text: $draft.groups[index].name, placeholder: "例如：项目 A、公共连接",
+                            error: group.nameProblem(in: draft.groups))
+                Text("每条隧道只属于一个分组，SSH 节点可以复用。共享服务可放在“公共连接”分组，单独启停。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            WorkspaceSection("组内隧道 · \(members.count)", icon: "arrow.left.arrow.right") {
+                HStack {
+                    Menu("移入已有隧道") {
+                        ForEach(candidates) { tunnel in
+                            Button("\(tunnel.name)（\(draft.groupName(tunnel.groupId))）") {
+                                moveTunnel(tunnel.id, to: group.id)
+                            }
+                        }
+                    }.disabled(candidates.isEmpty)
+                    Button("新建隧道", action: addTunnel).disabled(draft.nodes.isEmpty)
+                    Spacer()
+                }.controlSize(.small)
+                if members.isEmpty {
+                    Text("这个分组还没有隧道。移入已有隧道，或新建一条。")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.vertical, 8)
+                }
+                ForEach(members) { tunnel in
+                    Divider()
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Button(tunnel.name.isEmpty ? "未命名隧道" : tunnel.name) {
+                                selected = .tunnel(tunnel.id); search = ""
+                            }.buttonStyle(.link).font(.system(size: 12, weight: .medium))
+                            Text("\(nodeName(tunnel.nodeId)) · \(tunnel.forwards.count) 条转发规则")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("移出分组") { moveTunnel(tunnel.id, to: nil) }
+                            .buttonStyle(.borderless).font(.system(size: 11))
+                            .help("将「\(tunnel.name)」移到未分组")
+                    }
+                }
+                Text("调整归属、重命名或删除分组在保存后生效，已有连接继续运行。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private func detailScroll<Content: View>(title: String, subtitle: String, icon: String,
                                             @ViewBuilder content: () -> Content) -> some View {
         ScrollView {
@@ -223,6 +314,11 @@ struct ConfigWorkspaceView: View {
                         Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
+                    if case .tunnel(let id) = selected {
+                        Button { duplicateTunnel(id) } label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(.borderless).help("复制隧道（默认不自动启动）")
+                            .accessibilityLabel("复制隧道")
+                    }
                     Button { deletion = selected } label: { Image(systemName: "trash") }
                         .buttonStyle(.borderless)
                         .disabled(selected.map { if case .node(let id) = $0 { return isNodeUsed(id) }; return false } ?? true)
@@ -246,7 +342,7 @@ struct ConfigWorkspaceView: View {
     private var emptyDetail: some View {
         VStack(spacing: 12) {
             Image(systemName: "server.rack").font(.system(size: 38, weight: .light)).foregroundStyle(.secondary)
-            Text(draft.nodes.isEmpty ? "从一个 SSH 节点开始" : "选择一个节点或隧道")
+            Text(draft.nodes.isEmpty ? "从一个 SSH 节点开始" : "选择一个分组、节点或隧道")
                 .font(.system(size: 18, weight: .semibold))
             Text(draft.nodes.isEmpty ? "添加服务器地址或 SSH 别名，再创建端口转发。" : "在左侧选择资源，编辑连接与转发设置。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -293,7 +389,10 @@ struct ConfigWorkspaceView: View {
     }
 
     private var filteredTunnels: [TunnelConfig] {
-        draft.tunnels.filter { search.isEmpty || ($0.name + " " + nodeName($0.nodeId)).localizedCaseInsensitiveContains(search) }
+        draft.tunnels.filter { search.isEmpty || ($0.name + " " + nodeName($0.nodeId) + " " + draft.groupName($0.groupId)).localizedCaseInsensitiveContains(search) }
+    }
+    private var filteredGroups: [TunnelGroupConfig] {
+        draft.groups.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
     }
     private var filteredNodes: [NodeConfig] {
         draft.nodes.filter { search.isEmpty || ($0.name + " " + $0.sshTarget).localizedCaseInsensitiveContains(search) }
@@ -307,10 +406,14 @@ struct ConfigWorkspaceView: View {
         return "删除当前资源（保存后生效）"
     }
     private var deletionTitle: String {
+        if case .group = deletion { return "删除这个分组？" }
         if case .node = deletion { return "删除这个 SSH 节点？" }
         return "删除这条隧道？"
     }
     private var deletionMessage: String {
+        if case .group = deletion {
+            return "保存后，组内隧道会移到未分组，已有连接继续运行。保存前可以撤销修改。"
+        }
         if case .tunnel(let id) = deletion, runtime[id] != nil {
             return "删除先写入草稿；保存后会停止这条正在运行的隧道。"
         }
@@ -320,15 +423,39 @@ struct ConfigWorkspaceView: View {
         let node = NodeConfig(name: "新节点 \(draft.nodes.count + 1)")
         draft.nodes.append(node); selected = .node(node.id); search = ""
     }
+    private func addGroup() {
+        let id = draft.addGroup()
+        selected = .group(id); search = ""; didSave = false; saveError = nil
+    }
+    private func moveTunnel(_ id: String, to groupID: String?) {
+        guard let index = draft.tunnels.firstIndex(where: { $0.id == id }) else { return }
+        draft.tunnels[index].groupId = groupID
+        didSave = false; saveError = nil
+    }
     private func addTunnel() {
-        guard let node = draft.nodes.first else { addNode(); return }
-        let tunnel = TunnelConfig(name: "新隧道 \(draft.tunnels.count + 1)", nodeId: node.id,
-                                  forwards: [ForwardSpec(bind: "127.0.0.1", host: "127.0.0.1")])
-        draft.tunnels.append(tunnel); selected = .tunnel(tunnel.id); search = ""
+        guard !draft.nodes.isEmpty else { addNode(); return }
+        showsTemplates = true
+    }
+    private var preferredNodeID: String? {
+        if case .node(let id) = selected { return id }
+        if case .tunnel(let id) = selected { return draft.tunnels.first { $0.id == id }?.nodeId }
+        return draft.nodes.first?.id
+    }
+    private var preferredGroupID: String? {
+        if case .group(let id) = selected { return id }
+        if case .tunnel(let id) = selected { return draft.tunnels.first { $0.id == id }?.groupId }
+        return nil
+    }
+    private func duplicateTunnel(_ id: String) {
+        guard let original = draft.tunnels.first(where: { $0.id == id }) else { return }
+        let copy = TunnelTemplate.duplicate(original, existing: draft.tunnels)
+        draft.tunnels.append(copy); selected = .tunnel(copy.id); search = ""
+        didSave = false; saveError = nil
     }
     private func deleteResource() {
         guard let target = deletion else { return }
         switch target {
+        case .group(let id): draft.removeGroup(id)
         case .tunnel(let id): draft.tunnels.removeAll { $0.id == id }
         case .node(let id):
             guard !isNodeUsed(id) else { deletion = nil; return }
@@ -337,9 +464,11 @@ struct ConfigWorkspaceView: View {
         deletion = nil; repairSelection()
     }
     private func repairSelection() {
+        if case .group(let id) = selected, draft.groups.contains(where: { $0.id == id }) { return }
         if case .tunnel(let id) = selected, draft.tunnels.contains(where: { $0.id == id }) { return }
         if case .node(let id) = selected, draft.nodes.contains(where: { $0.id == id }) { return }
-        selected = draft.tunnels.first.map { .tunnel($0.id) } ?? draft.nodes.first.map { .node($0.id) }
+        selected = draft.tunnels.first.map { .tunnel($0.id) }
+            ?? draft.groups.first.map { .group($0.id) } ?? draft.nodes.first.map { .node($0.id) }
     }
     private func saveDraft() {
         guard isDirty, issues.isEmpty else { return }
@@ -356,17 +485,31 @@ struct ConfigWorkspaceView: View {
 private struct TunnelConfigForm: View {
     @Binding var tunnel: TunnelConfig
     let nodes: [NodeConfig]
+    let groups: [TunnelGroupConfig]
     let isNew: Bool
+    let warnings: [String]
     let editNode: (String) -> Void
     @State private var showsAdvanced: Bool
 
-    init(tunnel: Binding<TunnelConfig>, nodes: [NodeConfig], isNew: Bool, editNode: @escaping (String) -> Void) {
-        _tunnel = tunnel; self.nodes = nodes; self.isNew = isNew; self.editNode = editNode
+    init(tunnel: Binding<TunnelConfig>, nodes: [NodeConfig], groups: [TunnelGroupConfig], isNew: Bool, warnings: [String], editNode: @escaping (String) -> Void) {
+        _tunnel = tunnel; self.nodes = nodes; self.groups = groups; self.isNew = isNew; self.editNode = editNode
+        self.warnings = warnings
         _showsAdvanced = State(initialValue: !tunnel.wrappedValue.extraArgs.isEmpty)
     }
 
     var body: some View {
         VStack(spacing: 16) {
+            if !warnings.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("监听端口重叠", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 12, weight: .medium))
+                    ForEach(warnings, id: \.self) { warning in
+                        Text(warning).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .foregroundStyle(.orange).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+            }
             WorkspaceSection("基本设置", icon: "slider.horizontal.3") {
                 ConfigField("隧道名称", text: $tunnel.name, placeholder: "例如：数据库访问",
                             error: ConfigDraftRules.trimmed(tunnel.name).isEmpty ? "请填写隧道名称" : nil)
@@ -382,6 +525,18 @@ private struct TunnelConfigForm: View {
                         if !nodes.contains(where: { $0.id == tunnel.nodeId }) { Text("请选择节点").tag(tunnel.nodeId) }
                         ForEach(nodes) { node in
                             Text(node.name.isEmpty ? node.host : node.name).tag(node.id)
+                        }
+                    }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("所属分组").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    Picker("所属分组", selection: Binding(
+                        get: { tunnel.groupId ?? "" },
+                        set: { tunnel.groupId = $0.isEmpty ? nil : $0 })) {
+                        Text("未分组").tag("")
+                        ForEach(groups) { group in Text(group.name).tag(group.id) }
+                        if let id = tunnel.groupId, !groups.contains(where: { $0.id == id }) {
+                            Text("分组不存在，请重新选择").tag(id)
                         }
                     }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                 }

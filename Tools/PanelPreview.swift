@@ -59,7 +59,8 @@ struct PanelPreview {
                                     ForwardSpec(port: "15432", host: "database.production.example.net", rport: "5432"),
                                     ForwardSpec(type: "D", port: "1080"),
                                     ForwardSpec(type: "R", port: "9000", host: "127.0.0.1", rport: "9000")
-                                   ], state: .stopped, isOn: false,
+                                   ], state: .needsAttention, isOn: false,
+                                   detail: "SSH 认证失败\n检查用户名、私钥和 SSH Agent，修改后重试。",
                                    error: "Permission denied (publickey).\n请检查节点的用户与密钥设置后再试。")
 
         try render("dark-single", items: [example], scheme: .dark, output: output)
@@ -68,6 +69,17 @@ struct PanelPreview {
         try render("light-multiple", items: [database, retry, socks], scheme: .light, output: output)
         try render("light-empty", items: [], scheme: .light, output: output)
         try render("dark-error", items: [long], scheme: .dark, expanded: true, output: output)
+        let connecting = TunnelPanelItem(id: "connecting", name: "数据库访问", nodeName: "example",
+                                         forwards: [local], state: .connecting, isOn: true,
+                                         detail: "正在进行 SSH 认证并建立转发…")
+        let unverified = TunnelPanelItem(id: "unverified", name: "已有的远程连接", nodeName: "staging-api",
+                                         forwards: [ForwardSpec(type: "R", port: "9000", host: "127.0.0.1", rport: "3000")],
+                                         state: .unverified, isOn: true,
+                                         detail: "已接管现有进程；缺少本次连接的确认记录，连接继续保留。")
+        for scheme in [ColorScheme.light, .dark] {
+            try render(scheme == .light ? "light-connecting" : "dark-connecting", items: [connecting], scheme: scheme, output: output)
+            try render(scheme == .light ? "light-unverified" : "dark-unverified", items: [unverified], scheme: scheme, output: output)
+        }
         try render("light-config-error", items: [example], scheme: .light,
                    configError: "配置读取失败，原文件和现有隧道已保留：节点或隧道 ID 重复", output: output)
         let many = (0..<8).map { index in
@@ -75,11 +87,31 @@ struct PanelPreview {
                             forwards: [local], state: .running, isOn: true, uptime: "18分钟")
         }
         try render("dark-scroll", items: many, scheme: .dark, output: output)
+        let groups = [TunnelGroupConfig(id: "project", name: "项目 A"), TunnelGroupConfig(id: "shared", name: "公共连接")]
+        var projectDB = database; projectDB.groupId = "project"
+        var projectRetry = retry; projectRetry.groupId = "project"
+        var sharedSOCKS = socks; sharedSOCKS.groupId = "shared"
+        let groupedItems = [projectDB, projectRetry, sharedSOCKS, example]
+        for scheme in [ColorScheme.light, .dark] {
+            let prefix = scheme == .light ? "light" : "dark"
+            try render("\(prefix)-groups", items: groupedItems, scheme: scheme,
+                       groups: groups, collapsed: ["group:project", "ungrouped"], output: output)
+            try render("\(prefix)-groups-expanded", items: groupedItems, scheme: scheme, groups: groups, output: output)
+            try render("\(prefix)-groups-collapsed", items: groupedItems, scheme: scheme,
+                       groups: groups, collapsed: ["group:project", "group:shared", "ungrouped"], output: output)
+        }
+        try render("light-empty-group", items: [], scheme: .light,
+                   groups: [TunnelGroupConfig(id: "empty", name: "新项目")], output: output)
+        var longGroups = groups; longGroups[0].name = "项目 A · 测试环境与数据库共享服务"
+        try render("dark-long-group", items: groupedItems, scheme: .dark, groups: longGroups,
+                   collapsed: ["group:project", "group:shared", "ungrouped"], output: output)
     }
 
     private static func render(_ name: String, items: [TunnelPanelItem], scheme: ColorScheme,
-                               expanded: Bool = false, configError: String? = nil, output: URL) throws {
-        let content = TunnelPanelView(items: items, configError: configError, expandErrorsInitially: expanded)
+                               expanded: Bool = false, configError: String? = nil,
+                               groups: [TunnelGroupConfig] = [], collapsed: Set<String> = [], output: URL) throws {
+        let content = TunnelPanelView(items: items, groups: groups, collapsedGroupIDs: collapsed,
+                                      configError: configError, expandErrorsInitially: expanded)
             .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay {

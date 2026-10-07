@@ -75,28 +75,37 @@ struct ForwardSpec: Codable, Equatable, Identifiable {
 
     /// ssh 转发参数值；填写不完整/非法返回 nil
     var arg: String? {
-        guard !isEmpty else { return nil }
+        guard !isEmpty, problem == nil else { return nil }
         let b = bind.trimmingCharacters(in: .whitespaces)
         let h = host.trimmingCharacters(in: .whitespaces)
-        if type == "D" {
-            guard UInt16(port) != nil else { return nil }
-            return b.isEmpty ? port : "\(b):\(port)"
+        let port = port.trimmingCharacters(in: .whitespaces)
+        let rport = rport.trimmingCharacters(in: .whitespaces)
+        func address(_ value: String) -> String {
+            value.contains(":") && !value.hasPrefix("[") ? "[\(value)]" : value
         }
-        guard UInt16(port) != nil, UInt16(rport) != nil, !h.isEmpty else { return nil }
-        return b.isEmpty ? "\(port):\(h):\(rport)" : "\(b):\(port):\(h):\(rport)"
+        if type == "D" {
+            return b.isEmpty ? port : "\(address(b)):\(port)"
+        }
+        return b.isEmpty ? "\(port):\(address(h)):\(rport)" : "\(address(b)):\(port):\(address(h)):\(rport)"
     }
 
     /// 具体哪里没填好；全空行不算问题
     var problem: String? {
         if isEmpty { return nil }
+        if !["L", "R", "D"].contains(type) { return "请选择转发类型" }
         if port.isEmpty { return "端口未填" }
-        if UInt16(port) == nil { return "端口「\(port)」需为 1-65535" }
+        if !Self.validPort(port) { return "监听端口需为 1–65535" }
         if type != "D" {
             if rport.isEmpty { return "目标端口未填" }
-            if UInt16(rport) == nil { return "目标端口「\(rport)」需为 1-65535" }
+            if !Self.validPort(rport) { return "目标端口需为 1–65535" }
             if host.trimmingCharacters(in: .whitespaces).isEmpty { return "目标地址未填" }
         }
         return nil
+    }
+
+    static func validPort(_ text: String) -> Bool {
+        guard let value = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        return (1...65535).contains(value)
     }
 
     var typeLabel: String {
@@ -128,10 +137,31 @@ struct ForwardSpec: Codable, Equatable, Identifiable {
     }
 }
 
+struct TunnelGroupConfig: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+
+    init(id: String = UUID().uuidString, name: String = "") {
+        self.id = id; self.name = name
+    }
+
+    func nameProblem(in groups: [TunnelGroupConfig]) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "请填写分组名称" }
+        if trimmed == "未分组" { return "“未分组”是保留名称，请换一个名称" }
+        if groups.contains(where: { $0.id != id && $0.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            return "分组名称已存在，请换一个名称"
+        }
+        return nil
+    }
+}
+
 struct TunnelConfig: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var nodeId: String
+    /// 单归属分组；nil 表示未分组，旧配置自动保留在未分组中。
+    var groupId: String? = nil
     /// 转发规则，可混合 L/R/D 类型
     var forwards: [ForwardSpec]
     /// 附加 ssh 参数（不支持含空格的参数值）
@@ -140,13 +170,15 @@ struct TunnelConfig: Codable, Identifiable, Equatable {
     var autoStart: Bool = false
 
     init(id: String = UUID().uuidString, name: String = "", nodeId: String = "",
-         forwards: [ForwardSpec] = [], extraArgs: [String] = [], autoStart: Bool = false) {
+         forwards: [ForwardSpec] = [], extraArgs: [String] = [], autoStart: Bool = false,
+         groupId: String? = nil) {
         self.id = id; self.name = name; self.nodeId = nodeId
+        self.groupId = groupId
         self.forwards = forwards; self.extraArgs = extraArgs; self.autoStart = autoStart
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, nodeId, forwards, extraArgs, autoStart
+        case id, name, nodeId, groupId, forwards, extraArgs, autoStart
     }
 
     init(from decoder: Decoder) throws {
@@ -154,6 +186,7 @@ struct TunnelConfig: Codable, Identifiable, Equatable {
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         nodeId = try c.decodeIfPresent(String.self, forKey: .nodeId) ?? ""
+        groupId = try c.decodeIfPresent(String.self, forKey: .groupId)
         forwards = try c.decodeIfPresent([ForwardSpec].self, forKey: .forwards) ?? []
         extraArgs = try c.decodeIfPresent([String].self, forKey: .extraArgs) ?? []
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? false
@@ -161,20 +194,24 @@ struct TunnelConfig: Codable, Identifiable, Equatable {
 }
 
 struct AppConfig: Codable, Equatable {
+    /// 数组顺序就是分组的展示顺序；公共连接也是普通分组。
+    var groups: [TunnelGroupConfig] = []
     var nodes: [NodeConfig] = []
     var tunnels: [TunnelConfig] = []
 
     init() {}
 
-    init(nodes: [NodeConfig], tunnels: [TunnelConfig]) {
+    init(nodes: [NodeConfig], tunnels: [TunnelConfig], groups: [TunnelGroupConfig] = []) {
         self.nodes = nodes
         self.tunnels = tunnels
+        self.groups = groups
     }
 
-    enum CodingKeys: String, CodingKey { case nodes, tunnels }
+    enum CodingKeys: String, CodingKey { case groups, nodes, tunnels }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        groups = try c.decodeIfPresent([TunnelGroupConfig].self, forKey: .groups) ?? []
         nodes = try c.decodeIfPresent([NodeConfig].self, forKey: .nodes) ?? []
         tunnels = try c.decode([TunnelConfig].self, forKey: .tunnels)
 
@@ -210,6 +247,32 @@ struct AppConfig: Codable, Equatable {
 
     static func defaultConfig() -> AppConfig {
         AppConfig()
+    }
+
+    func groupName(_ id: String?) -> String {
+        guard let id else { return "未分组" }
+        return groups.first { $0.id == id }?.name ?? "分组不存在"
+    }
+
+    func tunnelIDs(inGroup id: String?) -> [String] {
+        tunnels.filter { $0.groupId == id }.map(\.id)
+    }
+
+    /// 删除组织结构只解除归属，不删除或停止任何隧道。
+    mutating func removeGroup(_ id: String) {
+        groups.removeAll { $0.id == id }
+        for index in tunnels.indices where tunnels[index].groupId == id {
+            tunnels[index].groupId = nil
+        }
+    }
+
+    mutating func addGroup() -> String {
+        let names = Set(groups.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) })
+        var name = "新分组", number = 2
+        while names.contains(name) { name = "新分组 \(number)"; number += 1 }
+        let group = TunnelGroupConfig(name: name)
+        groups.append(group)
+        return group.id
     }
 }
 

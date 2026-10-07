@@ -7,5 +7,6 @@ trap 'rm -rf "$PREVIEW_DIR"' EXIT
 
 swiftc -swift-version 5 -parse-as-library \
   Sources/TunnelModels.swift Sources/PrivateStorage.swift Sources/ConfigStore.swift Sources/TunnelManager.swift \
+  Sources/TunnelDiagnostics.swift Sources/TunnelPreflight.swift \
   Sources/TunnelPanelView.swift Tools/PanelPreview.swift -o "$PREVIEW_DIR/panel-preview"
 "$PREVIEW_DIR/panel-preview" "${1:-build/panel-preview}"

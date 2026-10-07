@@ -13,6 +13,9 @@ struct ConfigEditor: View {
                 switch status.state {
                 case .running: return (status.id, ConfigRuntimeState.running)
                 case .reconnecting: return (status.id, ConfigRuntimeState.reconnecting)
+                case .connecting: return (status.id, ConfigRuntimeState.connecting)
+                case .needsAttention: return (status.id, ConfigRuntimeState.needsAttention)
+                case .unverified: return (status.id, ConfigRuntimeState.unverified)
                 case .stopped: return nil
                 }
             }),

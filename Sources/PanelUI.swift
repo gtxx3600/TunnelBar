@@ -15,7 +15,8 @@ struct TunnelBarApp: App {
         MenuBarExtra {
             TunnelPanel()
         } label: {
-            MenuIcon(reconnecting: manager.statuses.contains { $0.state == .reconnecting })
+            MenuIcon(reconnecting: manager.statuses.contains { $0.state == .reconnecting || $0.state == .connecting },
+                     needsAttention: manager.statuses.contains { $0.state == .needsAttention || $0.state == .unverified })
         }
         .menuBarExtraStyle(.window)
 
@@ -30,9 +31,10 @@ struct TunnelBarApp: App {
 struct MenuIcon: View {
     @Environment(\.openWindow) private var openWindow
     let reconnecting: Bool
+    let needsAttention: Bool
 
     var body: some View {
-        Image(systemName: reconnecting ? "arrow.triangle.2.circlepath" : "arrow.left.arrow.right")
+        Image(systemName: needsAttention ? "exclamationmark.triangle" : (reconnecting ? "arrow.triangle.2.circlepath" : "arrow.left.arrow.right"))
             .onAppear {
                 if TunnelBarApp.debugOpenConfig {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -62,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct TunnelPanel: View {
     @ObservedObject var manager = TunnelManager.shared
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("collapsedTunnelGroups") private var collapsedGroupState = "[]"
 
     var body: some View {
         TunnelPanelView(
@@ -71,8 +74,10 @@ struct TunnelPanel: View {
                                 forwards: status.config.forwards.filter { $0.arg != nil },
                                 state: status.state, isOn: manager.isOn(status.id),
                                 uptime: manager.uptimeText(status.id),
-                                detail: status.detail, error: manager.errorText(status.id))
+                                detail: status.detail, error: manager.diagnosticText(status.id), groupId: status.config.groupId)
             },
+            groups: manager.current.groups,
+            collapsedGroupIDs: TunnelGroupCollapseState.decode(collapsedGroupState),
             configError: manager.configError,
             actions: TunnelPanelActions(
                 toggle: { id, enabled in
@@ -84,6 +89,9 @@ struct TunnelPanel: View {
                 },
                 startAll: { for status in manager.statuses { manager.start(status.id) } },
                 stopAll: { manager.stopAll() },
+                startGroup: { manager.startGroup($0) },
+                stopGroup: { manager.stopGroup($0) },
+                toggleGroup: { collapsedGroupState = TunnelGroupCollapseState.toggled($0, in: collapsedGroupState) },
                 openConfig: { manager.editConfig() },
                 reload: { manager.loadConfig() },
                 quit: { NSApp.terminate(nil) }

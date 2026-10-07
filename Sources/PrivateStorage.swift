@@ -30,7 +30,13 @@ enum PrivateStorage {
                                              attributes: [.posixPermissions: 0o600]) else {
             throw ConfigStoreError.invalid("无法创建私有日志文件")
         }
-        return try FileHandle(forWritingTo: url)
+        let handle = try FileHandle(forWritingTo: url)
+        let flags = fcntl(handle.fileDescriptor, F_GETFL)
+        guard flags >= 0, fcntl(handle.fileDescriptor, F_SETFL, flags | O_APPEND) == 0 else {
+            try? handle.close()
+            throw ConfigStoreError.invalid("无法设置诊断日志的追加写入模式")
+        }
+        return handle
     }
 
     /// 兼容旧版本创建的文件：仅修改应用自身文件的权限，不修改内容或连接状态。

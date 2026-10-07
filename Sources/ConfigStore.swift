@@ -60,10 +60,16 @@ struct ConfigStore {
     }
 
     private func validate(_ cfg: AppConfig) throws {
-        guard Set(cfg.nodes.map(\.id)).count == cfg.nodes.count,
+        guard Set(cfg.groups.map(\.id)).count == cfg.groups.count,
+              Set(cfg.nodes.map(\.id)).count == cfg.nodes.count,
               Set(cfg.tunnels.map(\.id)).count == cfg.tunnels.count else {
-            throw ConfigStoreError.invalid("节点或隧道 ID 重复")
+            throw ConfigStoreError.invalid("分组、节点或隧道 ID 重复")
         }
+        for group in cfg.groups {
+            guard !group.id.isEmpty else { throw ConfigStoreError.invalid("分组 ID 不能为空") }
+            if let problem = group.nameProblem(in: cfg.groups) { throw ConfigStoreError.invalid(problem) }
+        }
+        let groupIDs = Set(cfg.groups.map(\.id))
         for node in cfg.nodes {
             guard !node.id.isEmpty, !node.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ConfigStoreError.invalid("节点 ID 和主机不能为空")
@@ -77,6 +83,9 @@ struct ConfigStore {
         }
         let nodeIDs = Set(cfg.nodes.map(\.id))
         for tunnel in cfg.tunnels {
+            if let groupID = tunnel.groupId, !groupIDs.contains(groupID) {
+                throw ConfigStoreError.invalid("隧道「\(tunnel.name)」引用的分组不存在")
+            }
             guard !tunnel.id.isEmpty, !tunnel.id.contains("/"), nodeIDs.contains(tunnel.nodeId) else {
                 throw ConfigStoreError.invalid("隧道「\(tunnel.name)」的 ID 或节点引用无效")
             }

@@ -40,6 +40,36 @@ struct ConfigPreview {
         try render("light-empty", config: AppConfig(), scheme: .light, output: output)
         try render("dark-minimum", config: config, runtime: runtime, scheme: .dark,
                    size: NSSize(width: 820, height: 600), output: output)
+        let copy = TunnelTemplate.duplicate(tunnel, existing: config.tunnels)
+        let copied = AppConfig(nodes: config.nodes, tunnels: config.tunnels + [copy])
+        try render("light-copied-tunnel", config: config, draft: copied, runtime: runtime,
+                   selection: .tunnel(copy.id), scheme: .light, output: output)
+        var grouped = config
+        grouped.groups = [TunnelGroupConfig(id: "project", name: "项目 A"),
+                          TunnelGroupConfig(id: "shared", name: "公共连接"),
+                          TunnelGroupConfig(id: "empty", name: "新项目")]
+        grouped.tunnels[0].groupId = "project"; grouped.tunnels[1].groupId = "project"
+        var sharedSocks = socks; sharedSocks.groupId = "shared"
+        grouped.tunnels.append(sharedSocks)
+        for scheme in [ColorScheme.light, .dark] {
+            let prefix = scheme == .light ? "light" : "dark"
+            try render("\(prefix)-group", config: grouped, runtime: runtime, selection: .group("project"),
+                       scheme: scheme, size: NSSize(width: 820, height: 600), output: output)
+            try render("\(prefix)-grouped-tunnel", config: grouped, runtime: runtime,
+                       scheme: scheme, output: output)
+            try render(scheme == .light ? "light-templates" : "dark-templates",
+                       content: TunnelTemplatePicker(nodes: grouped.nodes, groups: grouped.groups,
+                                                     selectedNode: example.id, selectedGroup: "project",
+                                                     initialTemplate: .postgresql, create: { _, _, _ in }),
+                       scheme: scheme, size: NSSize(width: 580, height: 510), output: output)
+        }
+        try render("light-empty-group", config: grouped, selection: .group("empty"), scheme: .light, output: output)
+        var invalidGroup = grouped; invalidGroup.groups[0].name = "公共连接"
+        try render("dark-invalid-group", config: grouped, draft: invalidGroup, selection: .group("project"),
+                   scheme: .dark, output: output)
+        var moved = grouped; moved.tunnels[0].groupId = "shared"
+        try render("light-moved-tunnel", config: grouped, draft: moved, runtime: runtime,
+                   selection: .group("shared"), scheme: .light, output: output)
 
         let sshSource = URL(fileURLWithPath: "/Users/example/.ssh/config")
         let hosts = ["example", "production", "development", "bastion", "database", "a-long-server-alias-for-staging-environment"].enumerated().map {

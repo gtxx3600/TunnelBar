@@ -3,10 +3,21 @@ import Foundation
 enum ConfigResource: Hashable {
     case tunnel(String)
     case node(String)
+    case group(String)
 }
 
 enum ConfigRuntimeState {
-    case running, reconnecting
+    case running, connecting, reconnecting, needsAttention, unverified
+    var isActive: Bool { self != .needsAttention }
+    var label: String {
+        switch self {
+        case .running: return "已建立"
+        case .connecting: return "连接中"
+        case .reconnecting: return "重连中"
+        case .needsAttention: return "需要处理"
+        case .unverified: return "待确认"
+        }
+    }
 }
 
 struct ConfigIssue: Identifiable {
@@ -36,11 +47,13 @@ enum ConfigDraftRules {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     static func validPort(_ text: String) -> Bool {
-        guard let value = Int(trimmed(text)) else { return false }
-        return (1...65535).contains(value)
+        ForwardSpec.validPort(text)
     }
     static func normalized(_ config: AppConfig) -> AppConfig {
         var result = config
+        result.groups = config.groups.map { original in
+            var group = original; group.name = trimmed(group.name); return group
+        }
         result.nodes = config.nodes.map { original in
             var node = original
             node.name = trimmed(node.name); node.host = trimmed(node.host)
@@ -62,17 +75,17 @@ enum ConfigDraftRules {
         return result
     }
     static func forwardProblem(_ forward: ForwardSpec) -> String? {
-        if !["L", "R", "D"].contains(forward.type) { return "请选择转发类型" }
-        if !validPort(forward.port) { return "监听端口需为 1–65535" }
-        if forward.type != "D" {
-            if trimmed(forward.host).isEmpty { return "请填写目标地址" }
-            if !validPort(forward.rport) { return "目标端口需为 1–65535" }
-        }
-        return nil
+        forward.isEmpty ? "请填写转发规则" : forward.problem
     }
     static func issues(in config: AppConfig) -> [ConfigIssue] {
         let config = normalized(config)
         var result: [ConfigIssue] = []
+        for group in config.groups {
+            if let problem = group.nameProblem(in: config.groups) {
+                result.append(ConfigIssue(resource: .group(group.id), field: "name", message: problem))
+            }
+        }
+        let groupIDs = Set(config.groups.map(\.id))
         for node in config.nodes {
             let resource = ConfigResource.node(node.id)
             if node.host.isEmpty {
@@ -85,6 +98,9 @@ enum ConfigDraftRules {
         let nodeIDs = Set(config.nodes.map(\.id))
         for tunnel in config.tunnels {
             let resource = ConfigResource.tunnel(tunnel.id)
+            if let groupID = tunnel.groupId, !groupIDs.contains(groupID) {
+                result.append(ConfigIssue(resource: resource, field: "group", message: "请选择一个有效分组或移到未分组"))
+            }
             if tunnel.name.isEmpty {
                 result.append(ConfigIssue(resource: resource, field: "name", message: "请填写隧道名称"))
             }
@@ -121,7 +137,7 @@ enum ConfigDraftRules {
             .map { $0.name.isEmpty ? $0.id : $0.name }
         return result
     }
-    // 名称和自动启动不改变生效连接；节点名称/ID 也不参与连接参数。
+    // 名称、分组和自动启动不改变生效连接；节点名称/ID 也不参与连接参数。
     private static func connectionSignature(_ tunnel: TunnelConfig, in config: AppConfig) -> [String]? {
         guard let node = config.nodes.first(where: { $0.id == tunnel.nodeId }) else { return nil }
         return [node.sshTarget, node.port.trimmingCharacters(in: .whitespaces),

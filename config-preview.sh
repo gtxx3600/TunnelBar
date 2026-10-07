@@ -7,6 +7,7 @@ trap 'rm -rf "$CONFIG_PREVIEW_DIR"' EXIT
 
 swiftc -swift-version 5 -parse-as-library \
   Sources/TunnelModels.swift Sources/ConfigDraft.swift Sources/SSHConfigImport.swift \
+  Sources/TunnelTemplates.swift Sources/TunnelTemplatePicker.swift Sources/TunnelPreflight.swift Sources/TunnelDiagnostics.swift \
   Sources/SSHConfigImportView.swift Sources/ConfigEditorView.swift \
   Tools/ConfigPreview.swift -o "$CONFIG_PREVIEW_DIR/config-preview"
 "$CONFIG_PREVIEW_DIR/config-preview" "${1:-build/config-preview}"
