@@ -1,0 +1,23 @@
+{
+  "selectedVariant": "B",
+  "design": "Black and phosphor-green Mobius ribbon with two directional arrows",
+  "baseModel": "gpt-image-2.5-sunburst",
+  "baseImage": "Resources/IconCandidates/MobiusGreen.png",
+  "basePrompt": "Resources/IconCandidates/MobiusGreen.prompt.txt",
+  "approvedPreview": "Resources/IconCandidates/MobiusGreenFilteredB.png",
+  "size": [1024, 1024],
+  "filter": {
+    "renderer": "Tools/icon-filter-study.swift",
+    "blockSizesPixels": [6, 16],
+    "gaussianSigmaPixels": 0.85,
+    "blend": 0.42,
+    "greenLevels": 24,
+    "protectEmblemEdges": true
+  },
+  "packaging": {
+    "renderer": "Tools/prepare-app-icon.swift",
+    "operation": "Remove connected exterior white matte and decontaminate antialias fringe",
+    "preserveInteriorPixels": true,
+    "output": "Resources/AppIcon.png"
+  }
+}

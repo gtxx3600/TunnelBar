@@ -24,6 +24,22 @@ open build/TunnelBar.app
 
 要求：Xcode Command Line Tools（swiftc），macOS 13+。
 
+应用图标采用黑绿莫比乌斯 B 版，位于 `Resources/AppIcon.png`。
+`gpt-image-2.5-sunburst` 生成的平滑原版与选定稿保留在 `Resources/IconCandidates/`；
+B 版使用 6/16 px 块大小、0.85 px 预过滤及 42% 混合，保留平滑轮廓。
+制作参数记录在 `Resources/AppIcon.recipe.json`，正式图标去掉外侧白底以适配 macOS 透明圆角。
+构建时通过 `Tools/build-icon.sh` 生成 16–1024 像素的标准与 Retina 资源，打包为 `AppIcon.icns`。
+
+如需从原版重做图标：
+
+```bash
+mkdir -p build
+swiftc -O Tools/icon-filter-study.swift -o build/icon-filter-study-renderer
+build/icon-filter-study-renderer Resources/IconCandidates/MobiusGreen.png build/icon-filter-study
+swift Tools/prepare-app-icon.swift build/icon-filter-study/MobiusGreen-filter-B.png Resources/AppIcon.png
+./build.sh
+```
+
 运行回归测试：`./test.sh`。测试使用临时配置和不联网的模拟 SSH 程序，
 覆盖配置损坏、迁移备份、启停竞态、重连，以及应用退出后接管 L/R/D 隧道，不操作现有连接。
 分组测试覆盖旧配置兼容、组内启停与重试取消，以及移动、重命名、删除分组时保留原 PID。

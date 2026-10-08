@@ -1,0 +1,15 @@
+Selected final artwork: B — black and phosphor-green Mobius ribbon.
+
+The generated smooth master is preserved in Resources/IconCandidates/MobiusGreen.png.
+Its two-reference GPT Image 2.5 Sunburst prompt is preserved beside it in MobiusGreen.prompt.txt.
+
+The approved B variant applies deterministic interior filtering to that master:
+6 / 16 px adaptive block sizes, Gaussian prefilter sigma 0.85 px, 42% blend,
+24 green tone levels, and protected smooth emblem edges.
+
+Resources/IconCandidates/MobiusGreenFilteredB.png is the exact approved review image.
+Resources/AppIcon.png uses the same interior artwork with only the exterior white
+review matte removed for native macOS transparency.
+
+See Resources/AppIcon.recipe.json for the parameters and reproducible renderers.
+The earlier blue portal artwork and prompt remain in Resources/IconCandidates/BluePortal.*.
