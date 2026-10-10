@@ -5,6 +5,8 @@ build/
 # 本地运行配置、备份与连接状态
 config.json
 config.json.*.bak
+config.before-import.*.json
+TunnelBar-config*.json
 *.pid
 run/
 .ssh/
