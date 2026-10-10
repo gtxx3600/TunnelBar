@@ -1,6 +1,7 @@
 import Foundation
 
 enum ConfigResource: Hashable {
+    case settings
     case tunnel(String)
     case node(String)
     case group(String)

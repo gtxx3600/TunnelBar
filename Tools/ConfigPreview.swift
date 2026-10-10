@@ -72,6 +72,29 @@ struct ConfigPreview {
                    selection: .group("shared"), scheme: .light, output: output)
 
         let sshSource = URL(fileURLWithPath: "/Users/example/.ssh/config")
+        for scheme in [ColorScheme.light, .dark] {
+            let prefix = scheme == .light ? "light" : "dark"
+            try render("\(prefix)-app-settings", content: ConfigWorkspaceView(config: grouped, selection: .settings),
+                       scheme: scheme, size: NSSize(width: 820, height: 600), output: output)
+            try render("\(prefix)-login-approval", content: ConfigWorkspaceView(config: grouped, selection: .settings,
+                                                                              loginState: .requiresApproval),
+                       scheme: scheme, size: NSSize(width: 820, height: 600), output: output)
+        }
+        try render("dark-login-error", content: ConfigWorkspaceView(config: grouped, selection: .settings,
+                   loginError: "登录项设置失败：无法注册应用，请检查应用签名并重试。"),
+                   scheme: .dark, size: NSSize(width: 820, height: 600), output: output)
+        var incoming = grouped
+        incoming.nodes[0].host = "other.example.net"
+        incoming.tunnels[0].forwards[0].port = "15434"
+        incoming.tunnels.removeLast()
+        let document = ConfigImportDocument(source: URL(fileURLWithPath: "/Users/example/TunnelBar-config.json"), config: incoming)
+        let review = ConfigImportReview(document: document, mergePlan: ConfigTransfer.merge(incoming, into: grouped))
+        for mode in ConfigImportMode.allCases {
+            try render("light-config-import-\(mode == .merge ? "merge" : "replace")",
+                       content: ConfigImportReviewView(review: review, baseline: grouped, existingDraft: grouped,
+                                                       activeIDs: ["database"], initialMode: mode, apply: { _ in }),
+                       scheme: .light, size: NSSize(width: 560, height: 570), output: output)
+        }
         let hosts = ["example", "production", "development", "bastion", "database", "a-long-server-alias-for-staging-environment"].enumerated().map {
             SSHConfigHost(alias: $0.element, source: sshSource, line: $0.offset * 5 + 1)
         }

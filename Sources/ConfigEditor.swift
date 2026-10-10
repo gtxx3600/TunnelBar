@@ -5,6 +5,7 @@ import AppKit
 struct ConfigEditor: View {
     @ObservedObject var manager = TunnelManager.shared
     @State private var initialFrameSet = false
+    @StateObject private var loginItem = LoginItemController()
 
     var body: some View {
         ConfigWorkspaceView(
@@ -20,14 +21,23 @@ struct ConfigEditor: View {
                 }
             }),
             configError: manager.configError,
-            save: { updated, original in
+            loginState: loginItem.state, loginError: loginItem.errorMessage,
+            setLoginEnabled: loginItem.setEnabled, refreshLogin: loginItem.refresh,
+            openLoginSettings: loginItem.openSettings,
+            importFile: ConfigFilePanels.chooseImport,
+            exportFile: { try ConfigFilePanels.export($0, protecting: TunnelManager.configURL) },
+            save: { updated, original, imported in
                 guard manager.current == original else {
                     throw ConfigStoreError.invalid("配置已在其他位置更新，请撤销修改并载入最新配置后再保存")
                 }
-                try manager.applyConfig(updated)
+                try manager.applyConfig(updated, backupBeforeImport: imported)
             }
         )
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem.refresh()
+        }
         .onAppear {
+            loginItem.refresh()
             guard !initialFrameSet else { return }
             initialFrameSet = true
             DispatchQueue.main.async {

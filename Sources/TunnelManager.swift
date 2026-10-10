@@ -156,11 +156,11 @@ final class TunnelManager: ObservableObject {
     }
 
     /// 配置窗口「保存」入口：落盘成功后应用，拉起新增的 autoStart 隧道。
-    func applyConfig(_ cfg: AppConfig) throws {
+    func applyConfig(_ cfg: AppConfig, backupBeforeImport: Bool = false) throws {
         guard !isExiting else { throw ConfigStoreError.invalid("应用正在退出") }
         let oldIDs = Set(current.tunnels.map(\.id))
         do {
-            try configStore.save(cfg)
+            try configStore.save(cfg, backupBeforeImport: backupBeforeImport)
         } catch {
             configError = "配置保存失败，现有隧道已保留：\(error.localizedDescription)"
             throw error

@@ -141,11 +141,46 @@ struct RegressionTests {
         try recovery(root: root, executable: executable)
         try exitAndAdopt(root: root, executable: executable)
         try importNodesPreservesTunnels(root: root, executable: executable)
+        try importConfiguration(root: root, executable: executable)
         try projectGroups(root: root, executable: executable)
         try groupPresentation()
         try connectionStates(root: root, executable: executable)
         try diagnosticRetention(root: root, executable: executable)
         print("All regression tests passed (isolated config + mock SSH; no network connections).")
+    }
+
+    static func importConfiguration(root: URL, executable: URL) throws {
+        let context = try TestContext(root: root, executable: executable, name: "configuration-import")
+        defer { context.cleanup() }
+        let manager = context.manager()
+        manager.start("probe")
+        let pid = try context.pid()
+        let original = try Data(contentsOf: context.url)
+        var imported = context.config
+        imported.nodes[0].host = "other-isolated-host"
+        imported.tunnels[0].forwards[0].port = "18089"
+        let merged = ConfigTransfer.merge(imported, into: manager.current).config
+        try expect(manager.current == context.config && kill(pid, 0) == 0,
+                   "Preparing an import must not apply configuration or touch live processes")
+        try manager.applyConfig(merged, backupBeforeImport: true)
+        let retained = try context.pid()
+        try expect(retained == pid && manager.isOn("probe") && !manager.isOn(merged.tunnels[1].id),
+                   "Merging an ID collision must retain the existing connection and leave non-autostart imports off")
+        let backups = try FileManager.default.contentsOfDirectory(at: context.url.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("config.before-import.") }
+        try expect(backups.count == 1, "Import save must create one backup")
+        let backup = try Data(contentsOf: backups[0])
+        try expect(backup == original, "Import save must back up the original configuration before applying")
+        var invalid = imported; invalid.tunnels[0].nodeId = "missing"
+        do {
+            try manager.applyConfig(invalid, backupBeforeImport: true)
+            throw TestFailure(description: "Invalid replacement must fail")
+        } catch is TestFailure { throw TestFailure(description: "Invalid replacement must fail") }
+        catch {}
+        try expect(manager.current == merged && kill(pid, 0) == 0, "Failed imported replacement must preserve active connections")
+        try manager.applyConfig(AppConfig(), backupBeforeImport: true)
+        try eventually("Explicitly saving an empty replacement must stop removed tunnels") { kill(pid, 0) != 0 }
+        print("PASS imported draft isolation, conflict merge with stable PID, pre-save backup and explicit replacement")
     }
 
     static func projectGroups(root: URL, executable: URL) throws {

@@ -45,7 +45,8 @@ enum PrivateStorage {
         try prepareDirectory(directory)
         for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
             let name = file.lastPathComponent
-            if name == url.lastPathComponent || (name.hasPrefix(url.lastPathComponent + ".v1.") && name.hasSuffix(".bak")) {
+            let importBackup = name.hasPrefix(url.deletingPathExtension().lastPathComponent + ".before-import.") && name.hasSuffix(".json")
+            if name == url.lastPathComponent || importBackup || (name.hasPrefix(url.lastPathComponent + ".v1.") && name.hasSuffix(".bak")) {
                 try protectFile(file)
             }
         }

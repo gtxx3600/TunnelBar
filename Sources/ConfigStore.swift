@@ -26,8 +26,7 @@ struct ConfigStore {
         }
 
         let data = try Data(contentsOf: url)
-        let cfg = try JSONDecoder().decode(AppConfig.self, from: data)
-        try validate(cfg)
+        let cfg = try Self.decode(data)
 
         // 迁移前保存原始字节，已有备份不覆盖。备份失败则整个迁移失败。
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -51,15 +50,31 @@ struct ConfigStore {
         return cfg
     }
 
-    func save(_ cfg: AppConfig) throws {
-        try validate(cfg)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(cfg)
+    func save(_ cfg: AppConfig, backupBeforeImport: Bool = false) throws {
+        let data = try Self.encode(cfg)
+        if backupBeforeImport && FileManager.default.fileExists(atPath: url.path) {
+            let original = try Data(contentsOf: url)
+            let backup = url.deletingPathExtension().appendingPathExtension("before-import.\(UUID().uuidString).json")
+            try PrivateStorage.write(original, to: backup, options: .withoutOverwriting)
+        }
         try PrivateStorage.write(data, to: url)
     }
 
-    private func validate(_ cfg: AppConfig) throws {
+    /// 纯解码用于外部导入，不修正来源文件权限，也不回写旧格式。
+    static func decode(_ data: Data) throws -> AppConfig {
+        let cfg = try JSONDecoder().decode(AppConfig.self, from: data)
+        try validate(cfg)
+        return cfg
+    }
+
+    static func encode(_ cfg: AppConfig) throws -> Data {
+        try validate(cfg)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(cfg)
+    }
+
+    private static func validate(_ cfg: AppConfig) throws {
         guard Set(cfg.groups.map(\.id)).count == cfg.groups.count,
               Set(cfg.nodes.map(\.id)).count == cfg.nodes.count,
               Set(cfg.tunnels.map(\.id)).count == cfg.tunnels.count else {

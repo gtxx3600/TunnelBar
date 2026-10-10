@@ -7,8 +7,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 clang Tests/mock-ssh.c -o "$TEST_DIR/mock-ssh"
 swiftc -swift-version 5 -parse-as-library \
-  Sources/TunnelModels.swift Sources/PrivateStorage.swift Sources/ConfigStore.swift \
-  Sources/TunnelManager.swift Sources/TunnelDiagnostics.swift Sources/TunnelPreflight.swift Sources/SSHConfigImport.swift Sources/TunnelPanelView.swift \
+  Sources/TunnelModels.swift Sources/ConfigDraft.swift Sources/PrivateStorage.swift Sources/ConfigStore.swift \
+  Sources/TunnelManager.swift Sources/TunnelDiagnostics.swift Sources/TunnelPreflight.swift Sources/SSHConfigImport.swift Sources/ConfigTransfer.swift Sources/TunnelPanelView.swift \
   Tests/RegressionTests.swift -o "$TEST_DIR/regression-tests"
 "$TEST_DIR/regression-tests" "$TEST_DIR" "$TEST_DIR/mock-ssh"
 
@@ -28,3 +28,13 @@ swiftc -swift-version 5 -parse-as-library \
   Sources/TunnelModels.swift Sources/TunnelDiagnostics.swift Sources/TunnelPreflight.swift \
   Tests/ConnectionTests.swift -o "$TEST_DIR/connection-tests"
 "$TEST_DIR/connection-tests"
+
+swiftc -swift-version 5 -parse-as-library \
+  Sources/TunnelModels.swift Sources/ConfigDraft.swift Sources/PrivateStorage.swift Sources/ConfigStore.swift Sources/ConfigTransfer.swift \
+  Tests/ConfigTransferTests.swift -o "$TEST_DIR/config-transfer-tests"
+"$TEST_DIR/config-transfer-tests"
+
+# 使用可注入服务验证登录项状态，不修改本机真实登录偏好。
+swiftc -swift-version 5 -parse-as-library Sources/LoginItemController.swift Tests/LoginItemTests.swift \
+  -o "$TEST_DIR/login-item-tests"
+"$TEST_DIR/login-item-tests"

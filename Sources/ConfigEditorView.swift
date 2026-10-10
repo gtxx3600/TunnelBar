@@ -6,7 +6,14 @@ struct ConfigWorkspaceView: View {
     let config: AppConfig
     let runtime: [String: ConfigRuntimeState]
     let configError: String?
-    let save: (AppConfig, AppConfig) throws -> Void
+    let loginState: LoginItemState
+    let loginError: String?
+    let setLoginEnabled: (Bool) -> Void
+    let refreshLogin: () -> Void
+    let openLoginSettings: () -> Void
+    let importFile: () throws -> ConfigImportDocument?
+    let exportFile: (AppConfig) throws -> URL?
+    let save: (AppConfig, AppConfig, Bool) throws -> Void
 
     @State private var draft: AppConfig
     @State private var baseline: AppConfig
@@ -17,11 +24,24 @@ struct ConfigWorkspaceView: View {
     @State private var didSave = false
     @State private var showsSSHImport = false
     @State private var showsTemplates = false
+    @State private var importReview: ConfigImportReview?
+    @State private var importedDraft = false
+    @State private var fileMessage: String?
+    @State private var fileError: String?
 
     init(config: AppConfig, runtime: [String: ConfigRuntimeState] = [:],
          configError: String? = nil, selection: ConfigResource? = nil,
-         initialDraft: AppConfig? = nil, save: @escaping (AppConfig, AppConfig) throws -> Void = { _, _ in }) {
+         initialDraft: AppConfig? = nil,
+         loginState: LoginItemState = .notRegistered, loginError: String? = nil,
+         setLoginEnabled: @escaping (Bool) -> Void = { _ in }, refreshLogin: @escaping () -> Void = {},
+         openLoginSettings: @escaping () -> Void = {},
+         importFile: @escaping () throws -> ConfigImportDocument? = { nil },
+         exportFile: @escaping (AppConfig) throws -> URL? = { _ in nil },
+         save: @escaping (AppConfig, AppConfig, Bool) throws -> Void = { _, _, _ in }) {
         self.config = config; self.runtime = runtime; self.configError = configError; self.save = save
+        self.loginState = loginState; self.loginError = loginError; self.setLoginEnabled = setLoginEnabled
+        self.refreshLogin = refreshLogin; self.openLoginSettings = openLoginSettings
+        self.importFile = importFile; self.exportFile = exportFile
         _draft = State(initialValue: initialDraft ?? config)
         _baseline = State(initialValue: config)
         _selected = State(initialValue: selection ?? config.tunnels.first.map { .tunnel($0.id) }
@@ -78,6 +98,14 @@ struct ConfigWorkspaceView: View {
                 showsTemplates = false
             }
         }
+        .sheet(item: $importReview) { review in
+            ConfigImportReviewView(review: review, baseline: baseline, existingDraft: draft,
+                                   activeIDs: Set(runtime.filter { $0.value.isActive }.keys), apply: applyImportedConfig)
+        }
+        .alert("配置文件操作失败", isPresented: Binding(
+            get: { fileError != nil }, set: { if !$0 { fileError = nil } })) {
+                Button("好", role: .cancel) { fileError = nil }
+            } message: { Text(fileError ?? "") }
     }
 
     private var sidebar: some View {
@@ -104,6 +132,11 @@ struct ConfigWorkspaceView: View {
             .padding(16)
 
             List(selection: $selected) {
+                Section {
+                    Label("应用设置", systemImage: "gearshape")
+                        .font(.system(size: 12, weight: .medium)).padding(.vertical, 5)
+                        .tag(ConfigResource.settings)
+                }
                 Section {
                     ForEach(filteredGroups) { group in
                         resourceRow(name: group.name.isEmpty ? "未命名分组" : group.name,
@@ -181,6 +214,13 @@ struct ConfigWorkspaceView: View {
                     Label("从 SSH 配置导入…", systemImage: "square.and.arrow.down")
                         .font(.system(size: 11.5)).foregroundStyle(Color.accentColor)
                 }.buttonStyle(.plain)
+                Menu {
+                    Button("导入配置文件…", action: chooseImportFile)
+                    Button("导出已保存配置…", action: exportSavedConfig).disabled(configError != nil)
+                } label: {
+                    Label("配置导入与导出", systemImage: "doc.badge.arrow.up")
+                        .font(.system(size: 11.5)).frame(maxWidth: .infinity, alignment: .leading)
+                }.menuStyle(.borderlessButton)
             }
             .padding(.horizontal, 16).padding(.vertical, 13)
         }
@@ -219,6 +259,10 @@ struct ConfigWorkspaceView: View {
     @ViewBuilder private var detail: some View {
         if let selected {
             switch selected {
+            case .settings:
+                detailScroll(title: "应用设置", subtitle: "启动与配置备份", icon: "gearshape") {
+                    applicationSettings
+                }.onAppear(perform: refreshLogin)
             case .group(let id):
                 if let index = draft.groups.firstIndex(where: { $0.id == id }) {
                     detailScroll(title: draft.groups[index].name, subtitle: "项目分组", icon: "folder") {
@@ -319,10 +363,12 @@ struct ConfigWorkspaceView: View {
                             .buttonStyle(.borderless).help("复制隧道（默认不自动启动）")
                             .accessibilityLabel("复制隧道")
                     }
-                    Button { deletion = selected } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless)
-                        .disabled(selected.map { if case .node(let id) = $0 { return isNodeUsed(id) }; return false } ?? true)
-                        .help(deleteHelp)
+                    if selected != .settings {
+                        Button { deletion = selected } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                            .disabled(selected.map { if case .node(let id) = $0 { return isNodeUsed(id) }; return false } ?? true)
+                            .help(deleteHelp)
+                    }
                 }
                 if let error = saveError ?? configError {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -348,6 +394,7 @@ struct ConfigWorkspaceView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             Button("添加 SSH 节点", action: addNode).buttonStyle(.borderedProminent).padding(.top, 5)
             Button("从 SSH 配置导入…") { showsSSHImport = true }.buttonStyle(.bordered)
+            Button("导入配置文件…", action: chooseImportFile).buttonStyle(.bordered)
             if !draft.nodes.isEmpty { Button("新建隧道", action: addTunnel).buttonStyle(.bordered) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -368,7 +415,7 @@ struct ConfigWorkspaceView: View {
                           systemImage: isDirty ? "pencil.circle" : (configError != nil ? "exclamationmark.circle" : "checkmark.circle"))
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                Text(isDirty && !impact.description.isEmpty ? impact.description : "修改先保存在草稿中，点击保存后生效")
+                Text(isDirty && !impact.description.isEmpty ? impact.description : "连接配置先保存在草稿中，点击保存后生效")
                     .font(.system(size: 11))
                     .foregroundStyle(isDirty && impact.interruptsConnection ? Color.orange : Color.secondary)
                     .lineLimit(2).truncationMode(.tail)
@@ -377,6 +424,7 @@ struct ConfigWorkspaceView: View {
             Spacer(minLength: 6)
             Button("撤销修改") {
                 draft = config; baseline = config; didSave = false; saveError = nil; repairSelection()
+                importedDraft = false; fileMessage = nil
             }.disabled(!isDirty)
             Button(impact.interruptsConnection && isDirty ? "保存并应用" : "保存") { saveDraft() }
                 .buttonStyle(.borderedProminent)
@@ -455,6 +503,7 @@ struct ConfigWorkspaceView: View {
     private func deleteResource() {
         guard let target = deletion else { return }
         switch target {
+        case .settings: break
         case .group(let id): draft.removeGroup(id)
         case .tunnel(let id): draft.tunnels.removeAll { $0.id == id }
         case .node(let id):
@@ -464,6 +513,7 @@ struct ConfigWorkspaceView: View {
         deletion = nil; repairSelection()
     }
     private func repairSelection() {
+        if selected == .settings { return }
         if case .group(let id) = selected, draft.groups.contains(where: { $0.id == id }) { return }
         if case .tunnel(let id) = selected, draft.tunnels.contains(where: { $0.id == id }) { return }
         if case .node(let id) = selected, draft.nodes.contains(where: { $0.id == id }) { return }
@@ -474,11 +524,81 @@ struct ConfigWorkspaceView: View {
         guard isDirty, issues.isEmpty else { return }
         let normalized = ConfigDraftRules.normalized(draft)
         do {
-            try save(normalized, baseline)
+            try save(normalized, baseline, importedDraft)
             draft = normalized; baseline = normalized; didSave = true; saveError = nil
+            importedDraft = false; fileMessage = nil
         } catch {
             saveError = "保存失败，草稿已保留：\(error.localizedDescription)"
         }
+    }
+
+    private var applicationSettings: some View {
+        VStack(spacing: 16) {
+            WorkspaceSection("启动", icon: "power") {
+                Toggle("登录时启动 TunnelBar", isOn: Binding(
+                    get: { loginState.isRequested }, set: setLoginEnabled))
+                    .toggleStyle(.switch)
+                Text(loginError ?? loginState.description)
+                    .font(.system(size: 12))
+                    .foregroundStyle(loginError != nil || loginState == .requiresApproval ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("开机并登录账户后自动打开应用。此开关立即生效；隧道仍按各自的“自动启动”设置连接。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if loginState == .requiresApproval || loginError != nil {
+                    Button("打开系统登录项设置", action: openLoginSettings).controlSize(.small)
+                }
+            }
+            WorkspaceSection("配置导入与导出", icon: "doc.on.doc") {
+                Text("备份或迁移分组、SSH 节点与隧道。")
+                    .font(.system(size: 12, weight: .medium))
+                Text("导入可合并或替换草稿，点击保存后生效，并自动备份原配置。导出使用已保存的配置。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("导入配置…", action: chooseImportFile)
+                    Button("导出已保存配置…", action: exportSavedConfig).disabled(configError != nil)
+                }.controlSize(.regular)
+                if isDirty {
+                    Text("有未保存的修改；若要一并导出，请先保存。")
+                        .font(.system(size: 11)).foregroundStyle(.orange)
+                }
+                if let fileMessage {
+                    Label(fileMessage, systemImage: "checkmark.circle")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("文件包含服务器地址、用户名、私钥路径和附加参数，不包含私钥内容、SSH 配置文件或本机登录项设置。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func chooseImportFile() {
+        do {
+            guard let document = try importFile() else { return }
+            importReview = ConfigImportReview(document: document, mergePlan: ConfigTransfer.merge(document.config, into: draft))
+            fileError = nil
+        } catch { fileError = error.localizedDescription }
+    }
+
+    private func applyImportedConfig(_ updated: AppConfig) {
+        let tunnelIDs = Set(draft.tunnels.map(\.id)), nodeIDs = Set(draft.nodes.map(\.id))
+        let groupIDs = Set(draft.groups.map(\.id))
+        let selection = updated.tunnels.first { !tunnelIDs.contains($0.id) }.map { ConfigResource.tunnel($0.id) }
+            ?? updated.nodes.first { !nodeIDs.contains($0.id) }.map { .node($0.id) }
+            ?? updated.groups.first { !groupIDs.contains($0.id) }.map { .group($0.id) }
+        draft = updated; importedDraft = true; search = ""; didSave = false; saveError = nil
+        fileMessage = "已导入到草稿，检查后点击保存。"; importReview = nil
+        selected = selection ?? draft.tunnels.first.map { .tunnel($0.id) } ?? .settings
+    }
+
+    private func exportSavedConfig() {
+        do {
+            guard let url = try exportFile(config) else { return }
+            fileMessage = "已导出：\(url.lastPathComponent)"; fileError = nil; selected = .settings
+        } catch { fileError = error.localizedDescription }
     }
 }
 
