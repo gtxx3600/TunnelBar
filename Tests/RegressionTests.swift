@@ -51,8 +51,8 @@ final class TestContext {
     var runDir: URL { url.deletingLastPathComponent().appendingPathComponent("run") }
     func pidURL(_ id: String = "probe") -> URL { runDir.appendingPathComponent("\(id).pid") }
 
-    func manager() -> TunnelManager {
-        let manager = TunnelManager(configURL: url, sshExecutable: executable)
+    func manager(autoStartOnLaunch: Bool = true) -> TunnelManager {
+        let manager = TunnelManager(configURL: url, sshExecutable: executable, autoStartOnLaunch: autoStartOnLaunch)
         managers.append(manager)
         pump(0.35)
         return manager
@@ -133,6 +133,8 @@ struct RegressionTests {
             return
         }
 
+        try manualStopDiagnostics(root: root, executable: executable)
+        try updateRelaunch(root: root, executable: executable)
         try configFailures(root: root, executable: executable)
         try migration(root: root, executable: executable)
         try privateStorage(root: root, executable: executable)
@@ -604,6 +606,71 @@ struct RegressionTests {
         print("PASS owning app exits without killing L/R/D tunnels; next startup restores the same processes")
     }
 
+    static func manualStopDiagnostics(root: URL, executable: URL) throws {
+        for adopt in [false, true] {
+            let context = try TestContext(root: root, executable: executable, name: "manual-stop-\(adopt)", allTypes: true)
+            defer { context.cleanup() }
+            let owner = context.manager()
+            for tunnel in context.config.tunnels { owner.start(tunnel.id) }
+            try eventually("L/R/D tunnels must establish before stopping") {
+                owner.statuses.allSatisfy { $0.state == .running }
+            }
+            let pids = try context.config.tunnels.map { try context.pid($0.id) }
+            if adopt { owner.prepareForAppExit() }
+            let manager = adopt ? context.manager() : owner
+            try expect(manager.statuses.allSatisfy { $0.state == .running }, "Adoption must retain established connections")
+
+            for tunnel in context.config.tunnels {
+                let log = context.runDir.appendingPathComponent("\(tunnel.id).log")
+                try expect(!SSHLogReader.tail(log).isEmpty, "Fixture must leave real connection diagnostics on disk")
+                manager.toggle(tunnel.id)
+                try expect(manager.statuses.first { $0.id == tunnel.id }?.state == .stopped && !manager.isOn(tunnel.id),
+                           "Turning off a tunnel must stop it")
+                try expect(manager.errorText(tunnel.id) == nil && manager.diagnosticText(tunnel.id) == nil,
+                           "Manually stopped tunnels must not expose normal SSH logs as an error")
+            }
+            try eventually("Manual stop must terminate every managed process") { pids.allSatisfy { kill($0, 0) != 0 } }
+            pump(0.3)
+            try expect(manager.statuses.allSatisfy { $0.state == .stopped && manager.diagnosticText($0.id) == nil },
+                       "Late exit callbacks must not restore diagnostics after manual stop")
+
+            manager.prepareForAppExit()
+            let relaunched = context.manager()
+            try expect(relaunched.statuses.allSatisfy { $0.state == .stopped && relaunched.diagnosticText($0.id) == nil },
+                       "Relaunch must not surface retained logs for stopped tunnels")
+        }
+        print("PASS manual stop hides retained diagnostics for owned/adopted L/R/D tunnels, including after relaunch")
+    }
+
+    static func updateRelaunch(root: URL, executable: URL) throws {
+        let context = try TestContext(root: root, executable: executable, name: "update-relaunch", autoStart: true, allTypes: true)
+        defer { context.cleanup() }
+        let originalConfig = try Data(contentsOf: context.url)
+        let owner = context.manager(autoStartOnLaunch: false)
+        try expect(owner.statuses.allSatisfy { $0.state == .stopped }, "Update launch must not start stopped tunnels")
+        owner.start("probe")
+        try eventually("The retained connection must establish") { owner.statuses[0].state == .running }
+        let pid = try context.pid()
+        owner.prepareForAppExit()
+
+        let updated = context.manager(autoStartOnLaunch: false)
+        let adoptedPID = try context.pid()
+        try expect(adoptedPID == pid && kill(pid, 0) == 0 && updated.statuses[0].state == .running,
+                   "Update launch must adopt the same live process")
+        try expect(updated.statuses.dropFirst().allSatisfy { $0.state == .stopped && !updated.isOn($0.id) },
+                   "Update launch must preserve stopped tunnels even when autoStart is enabled")
+        let retainedConfig = try Data(contentsOf: context.url)
+        try expect(retainedConfig == originalConfig && updated.current == context.config,
+                   "Skipping auto-start must not alter saved or in-memory settings")
+
+        updated.prepareForAppExit()
+        let normalLaunch = context.manager()
+        try eventually("The next normal launch must respect saved autoStart settings") {
+            normalLaunch.statuses.allSatisfy { $0.state == .running }
+        }
+        print("PASS update launch preserves running/stopped tunnels and config; normal relaunch still auto-starts")
+    }
+
     static func connectionStates(root: URL, executable: URL) throws {
         for mode in ["delayed", "remote-delayed", "auth", "network", "port", "ready-warning"] {
             let context = try TestContext(root: root, executable: executable, name: "state-\(mode)")
@@ -624,13 +691,23 @@ struct RegressionTests {
             } else if mode == "delayed" || mode == "remote-delayed" {
                 pump(0.35)
                 try expect(manager.statuses[0].state == .connecting, "Authentication/session entry must not bypass forwarding confirmation")
+                if mode == "remote-delayed" {
+                    try expect(manager.diagnosticText("probe")?.contains("Entering interactive session.") == true,
+                               "Pending remote confirmation must retain current connection diagnostics")
+                }
                 try eventually("Complete forwarding evidence must establish the tunnel") { manager.statuses[0].state == .running }
             } else if mode == "network" {
                 try eventually("Network failure must retry") { manager.statuses[0].state == .reconnecting }
                 try expect(manager.isOn("probe"), "Transient error must retain user intent")
+                try expect(manager.diagnosticText("probe")?.contains("Connection timed out") == true,
+                           "Automatic retries must retain the actual failure diagnostics")
+                manager.stop("probe")
+                try expect(manager.diagnosticText("probe") == nil, "Cancelling a retry must dismiss its diagnostics")
             } else {
                 try eventually("Actionable failure must pause retries") { manager.statuses[0].state == .needsAttention }
                 try expect(!manager.isOn("probe") && manager.errorText("probe") != nil, "Actionable errors need an explanation and no infinite retry")
+                try expect(manager.diagnosticText("probe") == manager.errorText("probe"),
+                           "Actionable failures must remain visible even though their switch is off")
                 pump(1.7)
                 try expect(!FileManager.default.fileExists(atPath: context.pidURL().path), "Actionable failure respawned without user action")
                 cfg.tunnels[0].extraArgs = []

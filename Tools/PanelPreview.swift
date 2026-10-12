@@ -53,6 +53,10 @@ struct PanelPreview {
                                     error: "ssh: connect to host staging-api.example.net port 22: Connection timed out")
         let socks = TunnelPanelItem(id: "socks", name: "开发 SOCKS 代理", nodeName: "dev-box",
                                     forwards: [ForwardSpec(type: "D", port: "1080")], state: .stopped, isOn: false)
+        let stopped = TunnelPanelItem(id: "stopped", name: "远程开发访问", nodeName: "example",
+                                      forwards: [ForwardSpec(type: "R", port: "10022", host: "127.0.0.1", rport: "22")],
+                                      state: .stopped, isOn: false,
+                                      error: "debug1: Entering interactive session.\nKilled by signal 15.")
         let long = TunnelPanelItem(id: "long", name: "示例环境 · 数据库与应用服务转发",
                                    nodeName: "example-production-bastion-01",
                                    forwards: [
@@ -69,6 +73,8 @@ struct PanelPreview {
         try render("light-multiple", items: [database, retry, socks], scheme: .light, output: output)
         try render("dark-readme", items: [database, retry], scheme: .dark, output: output)
         try render("light-readme", items: [database, retry], scheme: .light, output: output)
+        try render("dark-manual-stop", items: [example, stopped], scheme: .dark, expanded: true, output: output)
+        try render("light-manual-stop", items: [example, stopped], scheme: .light, expanded: true, output: output)
         try render("light-empty", items: [], scheme: .light, output: output)
         try render("dark-error", items: [long], scheme: .dark, expanded: true, output: output)
         let connecting = TunnelPanelItem(id: "connecting", name: "数据库访问", nodeName: "example",
@@ -96,6 +102,12 @@ struct PanelPreview {
         let groupedItems = [projectDB, projectRetry, sharedSOCKS, example]
         for scheme in [ColorScheme.light, .dark] {
             let prefix = scheme == .light ? "light" : "dark"
+            try render("\(prefix)-flat-with-saved-collapse", items: [example, stopped], scheme: scheme,
+                       collapsed: ["ungrouped"], output: output)
+            try render("\(prefix)-single-group", items: [projectDB, example], scheme: scheme,
+                       groups: [groups[0]], output: output)
+            try render("\(prefix)-empty-group-with-ungrouped", items: [example, stopped], scheme: scheme,
+                       groups: [groups[0]], output: output)
             try render("\(prefix)-groups", items: groupedItems, scheme: scheme,
                        groups: groups, collapsed: ["group:project", "ungrouped"], output: output)
             try render("\(prefix)-groups-expanded", items: groupedItems, scheme: scheme, groups: groups, output: output)

@@ -55,7 +55,8 @@ final class TunnelManager: ObservableObject {
 
     /// 可注入临时配置和模拟 SSH 程序，测试不接触用户隧道。
     init(configURL: URL = TunnelManager.configURL,
-         sshExecutable: URL = URL(fileURLWithPath: "/usr/bin/ssh")) {
+         sshExecutable: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
+         autoStartOnLaunch: Bool = !CommandLine.arguments.contains("--no-autostart")) {
         configStore = ConfigStore(url: configURL)
         self.sshExecutable = sshExecutable
         loadConfig()
@@ -71,8 +72,11 @@ final class TunnelManager: ObservableObject {
                 self.objectWillChange.send()
             }
         }
-        for s in statuses where s.config.autoStart && !isOn(s.id) {
-            start(s.id)
+        // 更新应用时可用 --no-autostart 保留当前连接状态；仅影响本次启动，不修改配置。
+        if autoStartOnLaunch {
+            for s in statuses where s.config.autoStart && !isOn(s.id) {
+                start(s.id)
+            }
         }
     }
 
@@ -623,8 +627,10 @@ final class TunnelManager: ObservableObject {
     }
 
     func diagnosticText(_ id: String) -> String? {
+        // 已停止的隧道仍保留 SSH 日志；普通退出输出不应重新变成错误提示。
+        guard let state = statuses.first(where: { $0.id == id })?.state,
+              state != .running, state != .stopped else { return nil }
         if let error = lastError[id] { return error }
-        guard statuses.first(where: { $0.id == id })?.state != .running else { return nil }
         let text = SSHLogReader.tail(logFileURL(id))
         return text.isEmpty ? nil : text
     }

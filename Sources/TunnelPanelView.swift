@@ -142,8 +142,10 @@ struct TunnelPanelView: View {
         VStack(spacing: 10) {
             ForEach(TunnelPanelGroup.sections(groups: groups, items: items)) { group in
                 VStack(spacing: 6) {
-                    groupHeader(group)
-                    if !collapsedGroupIDs.contains(group.id) {
+                    if !groups.isEmpty {
+                        groupHeader(group)
+                    }
+                    if groups.isEmpty || !collapsedGroupIDs.contains(group.id) {
                         if group.items.isEmpty {
                             Text("还没有隧道，可在配置中添加")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -376,7 +378,7 @@ private struct TunnelCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if item.state != .running, let error = item.error, !error.isEmpty {
+            if item.state != .running, item.state != .stopped, let error = item.error, !error.isEmpty {
                 Button {
                     showsError.toggle()
                 } label: {
