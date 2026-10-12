@@ -67,6 +67,8 @@ struct PanelPreview {
         try render("light-single", items: [example], scheme: .light, output: output)
         try render("dark-multiple", items: [database, retry, socks], scheme: .dark, output: output)
         try render("light-multiple", items: [database, retry, socks], scheme: .light, output: output)
+        try render("dark-readme", items: [database, retry], scheme: .dark, output: output)
+        try render("light-readme", items: [database, retry], scheme: .light, output: output)
         try render("light-empty", items: [], scheme: .light, output: output)
         try render("dark-error", items: [long], scheme: .dark, expanded: true, output: output)
         let connecting = TunnelPanelItem(id: "connecting", name: "数据库访问", nodeName: "example",
